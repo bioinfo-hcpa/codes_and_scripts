@@ -1,0 +1,264 @@
+---
+title: "Metagenomic 16S analysis of upper respiratory tract of COVID-19 patients"
+author: "Otávio von Ameln Lovison"
+output:
+  html_document:
+    toc: true
+    toc_depth: 5
+---
+Este workflow é baseado na referência https://f1000research.com/articles/5-1492
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, eval = F, warning = F, message = F, fig.width = 15, fig.height = 15, 
+                      fig.align = 'center', fig.path = 'caminho para figuras, se for usar comandos de save automáticos')
+```
+
+# 0 - Prep - descrição do estudo. Exemplo abaixo:
+Data for this analysis is from the project 'Proteomics and Metagenomics for Identification and Characterization of COVID-19 Biomarkers', ethics approval 4.355.906, Hospital de Clínicas de Porto Alegre (HCPA). The bioinformatics analyses were performed in the Bioinformatics Core of HCPA. This document presents the metagenomics preprocessing workflow for this project.
+
+In this analysis we include 80 nasal and oropharynx swabs from HCPA biobank, collected to perform rt-qPCR for SARS-CoV-2 detection. The samples were selected using COVID-19 severity class (WHO, 2020), as follows: Group 1 (n = 22): positive rt-qPCR for SARS-CoV-2 - COVID-19 - moderate; Group 2 (n = 19, control group): negative rt-qPCR for SARS-CoV-2 (confirmed with a second test), previously classified as moderate COVID-19 by the physician; Group 3 (n = 20): positive rt-qPCR for SARS-CoV-2 - COVID-19 - severe/critical; Group 4 (n = 18, control group): asymptomatic, highly exposed inpatients and healthcare workers, who tested negative by rt-qPCR for SARS-CoV-2.      
+
+## 0.1 - Load libraries
+```{r libraries, eval=TRUE}
+rm(list = ls())
+library(knitr)
+library(phyloseq)
+library(kableExtra)
+library(ggplot2)
+library(gridExtra)
+library(dada2)
+library(rio)
+```
+
+TODOS AS ETAPAS COMPUTACIONALMENTE PESADAS/DEMORADAS CONTÉM UM SAVE PARA SEGURANÇA DO PROCESSO
+## 0.2 Download main data - chunk de reprodutibilidade. Caso alguém tenha interesse em baixar os dados depositados da publicação.
+```{r download_main_data, eval=FALSE}
+###Raw data (fastq files)
+download.file('link_do_repositorio',sep = '/'))
+
+### setting up the ASV data to match the formatting of the initial ASV based analysis
+download.file('link_do_repositorio',sep = '/'))
+
+```
+**Lovison_etal_preprocessing.RData** contains the preprocessing data. 
+
+## 0.3 Preprocessing
+### 0.3.1 Setting the paths
+```{r paths, eval=FALSE, echo=TRUE}
+set.seed(100)
+#Setting the paths and listing files
+miseq_path <- file.path("caminho para os fastq/FASTQ")
+filt_path <- file.path("caminho para os filtrados/FASTQ/filtered")
+fns <- sort(list.files("caminho para os fastq/FASTQ", full.names = TRUE))
+fnFs <- fns[grepl("R1", fns)] #Fwd
+fnRs <- fns[grepl("R2", fns)] #Rev
+```
+
+### 0.3.2 Forward Quality Plot
+```{r fwd_q_plot, eval=FALSE, echo=TRUE}
+ii <- sample(length(fnFs), 1)
+for(i in ii) { print(plotQualityProfile(fnFs[1:6]) + ggtitle("Fwd")) } #Entre chaves: intervalo de amostras que serão plotadas
+```
+
+### 0.3.3 Reverse Quality Plot
+```{r rev_q_plot, eval=FALSE, echo=TRUE}
+for(i in ii) { print(plotQualityProfile(fnRs[1:6]) + ggtitle("Rev")) } #Entre chaves: intervalo de amostras que serão plotadas
+```
+
+### 0.3.4 Filter and trim
+```{r filter_and_trim, eval=TRUE, echo=TRUE}
+if(!file_test("-d", filt_path)) dir.create(filt_path)
+filtFs <- file.path(filt_path, basename(fnFs))
+filtRs <- file.path(filt_path, basename(fnRs))
+
+#TrimLeft: Tamanho dos primers fwd e rev para remoção. 16S v3v4 é 17, 21.
+#TruncLen: Tamanho para truncar as sequências, baseado no plot de qualidade. Tentar manter a média de qualidade (linha verde) acima de 30. 
+out <- data.frame(reads.in = c(), reads.out = c(), sample = c())
+for(i in seq_along(fnFs)) {
+  z <- fastqPairedFilter(c(fnFs[[i]], fnRs[[i]]),
+                    c(filtFs[[i]], filtRs[[i]]),
+                    trimLeft=c(17, 21), 
+                    truncLen=c(240, 240), 
+                    maxN=0, maxEE=c(2,2), rm.phix = TRUE,
+                    compress=TRUE, multithread=TRUE)
+  out <- rbind(out, z)
+} 
+
+save(file = "nome_do_arquivo_do_ambiente_preprocessing.RData",list = c('out', 'miseq_path','filt_path','fns','fnFs', 'fnRs', 'ii', 'filtFs', 'filtRs'))
+rm(list = ls()) #Se quiser dar continuidade na análise sem limpar o ambiente, é só comentar (colocar o # na frente) desta linha.
+```
+
+### 0.3.5 Dereplication
+```{r derep, eval=TRUE, echo=TRUE}
+load('nome_do_arquivo_do_ambiente_preprocessing.RData')
+derepFs <- derepFastq(filtFs)
+derepRs <- derepFastq(filtRs)
+sam.names <- sapply(strsplit(basename(fnFs), "_"), `[`, 1)
+names(derepFs) <- sam.names
+names(derepRs) <- sam.names
+save(file = "nome_do_arquivo_do_ambiente_preprocessing.RData",list = c('out', 'miseq_path','filt_path','fns','fnFs', 'fnRs', 'ii', 'filtFs', 'filtRs', 'sam.names', 'derepFs', 'derepRs'))
+rm(list = ls())
+```
+
+### 0.3.6 Learning errors
+```{r learn_err, eval=TRUE, echo=TRUE}
+load('nome_do_arquivo_do_ambiente_preprocessing.RData')
+ddF <- dada(derepFs[1:79], err=NULL, selfConsist=TRUE, MAX_CONSIST = 20) #Ajustar o intervalo entre chaves com o número de amostras.
+ddR <- dada(derepRs[1:79], err=NULL, selfConsist=TRUE, MAX_CONSIST = 20) #Ajustar o intervalo entre chaves com o número de amostras.
+save(file = "nome_do_arquivo_do_ambiente_preprocessing.RData",list = c('out', 'miseq_path','filt_path','fns','fnFs', 'fnRs', 'ii', 'filtFs', 'filtRs', 'sam.names', 'derepFs', 'derepRs', 'ddF', 'ddR'))
+```
+
+### 0.3.7 Forward error rates
+```{r plot_fwd_err_rate, eval=TRUE, echo=TRUE}
+plotErrors(ddF)
+```
+
+### 0.3.8 Reverse error rates
+```{r plot_rev_err_rate, eval=TRUE, echo=TRUE}
+plotErrors(ddR)
+rm(list = ls())
+```
+
+### 0.3.9 Sample Inference
+```{r sam_infer, eval=TRUE, echo=TRUE}
+load('nome_do_arquivo_do_ambiente_preprocessing.RData')
+dadaFs <- dada(derepFs, err=ddF[[1]]$err_out, pool=TRUE, multithread = TRUE) #Pool = TRUE - maior sensibilidade
+dadaRs <- dada(derepRs, err=ddR[[1]]$err_out, pool=TRUE, multithread = TRUE)
+save(file = "nome_do_arquivo_do_ambiente_preprocessing.RData",list = c('out','miseq_path','filt_path','fns','fnFs', 'fnRs', 'ii', 'filtFs', 'filtRs', 'sam.names', 'derepFs', 'derepRs', 'ddF', 'ddR', 'dadaFs', 'dadaRs'))
+rm(list = ls())
+```
+
+### 0.3.10 Merge paired reads
+```{r merge_paired_reads, eval=TRUE, echo=TRUE}
+load('nome_do_arquivo_do_ambiente_preprocessing.RData')
+mergers <- mergePairs(dadaFs, derepFs, dadaRs, derepRs, verbose = TRUE)
+save(file = "nome_do_arquivo_do_ambiente_preprocessing.RData",list = c('out','miseq_path','filt_path','fns','fnFs', 'fnRs', 'ii', 'filtFs', 'filtRs', 'sam.names', 'derepFs', 'derepRs', 'ddF', 'ddR', 'dadaFs', 'dadaRs', 'mergers'))
+rm(list = ls())
+```
+
+### 0.3.11 Construct Sequence Table
+```{r const_seqtaball, eval=TRUE, echo=TRUE}
+load('nome_do_arquivo_do_ambiente_preprocessing.RData')
+seqtab.all <- makeSequenceTable(mergers[!grepl("Mock", names(mergers))]) #"Mock" é o nome da "mock community - controle interno. Essa linha remove a mock da tabela
+dim(seqtab.all)
+save(file = "nome_do_arquivo_do_ambiente_preprocessing.RData",list=c('out','miseq_path','filt_path','fns','fnFs', 'fnRs', 'ii', 'filtFs', 'filtRs', 'sam.names', 'derepFs', 'derepRs', 'ddF', 'ddR', 'dadaFs', 'dadaRs', 'mergers', 'seqtab.all'))
+```
+
+### 0.3.12 Remove chimeras and check the output
+```{r rem_chim, eval=TRUE, echo=TRUE}
+seqtab2 <- removeBimeraDenovo(seqtab.all, multithread=TRUE, verbose = TRUE)
+sum(seqtab2)/sum(seqtab.all)
+save(file = "nome_do_arquivo_do_ambiente_preprocessing.RData",list=c('out','miseq_path','filt_path','fns','fnFs', 'fnRs', 'ii', 'filtFs', 'filtRs', 'sam.names', 'derepFs', 'derepRs', 'ddF', 'ddR', 'dadaFs', 'dadaRs', 'mergers', 'seqtab.all', 'seqtab2'))
+rm(list = ls())
+```
+
+### 0.3.13  Remove non-target-length sequences
+```{r rem_non_targ, eval=TRUE, echo=TRUE}
+load('nome_do_arquivo_do_ambiente_preprocessing.RData')
+table(nchar(getSequences(seqtab2)))
+seqtab <- seqtab2[,nchar(colnames(seqtab2)) %in% seq(398,430)] #Se sobrarem sequências muito fora do intervalo esperado, possivelmente sejam "ruído ou sujeira". Ajustar o intervalo de tamanho de sequências para remover. 
+table(nchar(getSequences(seqtab)))
+```
+
+### 0.3.14 Track reads through the pipeline
+```{r track_reads, eval=TRUE, echo=TRUE}
+getN <- function(x) sum(getUniques(x))
+track <- cbind(out, sapply(dadaFs, getN),sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab))
+colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+kbl(track, caption = 'Reads through the pipeline', digits = 1, col.names = c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")) %>%
+  kable_classic(full_width = F, position = "left")
+export(track, "Reads through the pipeline.xlsx", rowNames = TRUE)
+```
+
+### 0.3.15 Assign taxonomy
+```{r assign_taxonomy, eval=TRUE, echo=TRUE}
+#Ajustar o link para o arquivo do banco de dados a ser utilizado
+taxtab <- assignTaxonomy(seqtab, "/home/metagenomica/Bancos_de_dados/eHOMD/eHOMD_RefSeq_dada2_V15.22.fasta.gz")
+taxtab <- addSpecies(taxtab, "/home/metagenomica/Bancos_de_dados/eHOMD/eHOMD_RefSeq_dada2_assign_species_V15.22.fasta.gz")
+save(file = "nome_do_arquivo_do_ambiente_preprocessing.RData",list=c('out','miseq_path','filt_path','fns','fnFs', 'fnRs', 'ii', 'filtFs', 'filtRs', 'sam.names', 'derepFs', 'derepRs', 'ddF', 'ddR', 'dadaFs', 'dadaRs', 'mergers', 'seqtab.all', 'seqtab2', 'seqtab', 'taxtab'))
+rm(list = ls())
+```
+
+### 0.3.16 Metadata engineering - se for necessário executar alguma engenharia de dados antes de montar o objeto phyloseq. Esse chunk de exemplo foi utilizado para ajustar a query do HCPA e fundir com a tabela de metadados original.
+```{r metadata_eng, eval=TRUE, echo=TRUE}
+# Carregando libs
+library(readxl)
+library(dplyr)
+library(tidyr)
+
+# Lendo o Excel
+curated_dataset <- read_excel("caminho ou nome do arquivo/curated_dataset.xlsx")
+
+# Ajuste de data/hora
+curated_dataset$Extraction_date <- as.POSIXct(curated_dataset$Extraction_date, format = "%Y-%m-%dT%H:%M:%S.%OS", tz = "UTC")
+
+# Agrupando o dado por "BiobankID" e "Analyte", e criar uma nova coluna rankeando pela data de extração
+curated_dataset <- curated_dataset %>% 
+  group_by(BiobankID, Analyte) %>% 
+  mutate(rank = dense_rank(Extraction_date))
+
+# Cria uma nova coluna do analito rankeado
+curated_dataset$Analyte_ranked <- paste0(curated_dataset$Analyte, " (", curated_dataset$rank, ")")
+
+# "pivot" do dado baseado no ranking dos analitos e na coluna "Result"
+curated_dataset_wide <- spread(curated_dataset, key = "Analyte_ranked", value = "Result")
+
+# Lendo o segundo Excel
+Lovison_etal_metadata <- read_excel("caminho ou nome para o arquivo_metadata.xlsx")
+
+# Convertendo "BiobankID" em 'double' 
+Lovison_etal_metadata$BiobankID <- as.double(Lovison_etal_metadata$BiobankID)
+
+# Juntando os dois dataframes por "BiobankID"
+merged_data <- left_join(Lovison_etal_metadata, curated_dataset_wide, by = "BiobankID")
+
+# Removendo colunas desnecessárias
+merged_data <- select(merged_data, -Analyte, -rank, -Extraction_date, -CollectionDate, -Exam, -HospitalLocation)
+
+#Summarize
+summarized_data <- merged_data %>%
+  group_by(sampleID) %>%
+  summarize(across(where(is.numeric), mean, na.rm = TRUE), .groups = "drop")
+
+summarized_data <- inner_join(Lovison_etal_metadata, summarized_data, by = "sampleID")
+
+# Removendo as amostras que não atingiram o critério de qualidade para dar "match" com o dado pré-processado
+summarized_data_filtered <- summarized_data %>%
+  filter(sampleID != "M02", sampleID != "M09", sampleID != "M49", sampleID != "M71", sampleID != "M79")
+
+# Exportando o dado tratado como CSV
+write.csv(summarized_data_filtered, file = "summarized_data_filtered.csv", sep=",", dec=".", row.names = FALSE)
+
+# Importando o dado manualmente verificado e curado 
+samdf <- read.csv("summarized_data_filtered2.csv")
+rownames(samdf) <- samdf$sampleID
+```
+
+### 0.3.17 Construct the phyloseq object
+```{r phyloseq_object, eval=TRUE, echo=TRUE}
+#Produzindo o objeto phyloseq
+ps <- phyloseq(tax_table(taxtab),
+               sample_data(samdf),
+               otu_table(seqtab, taxa_are_rows = FALSE))
+ps
+saveRDS(ps, file = "ps.rds")
+
+#Renomeando as sequências para um melhor manejo 
+dna <- Biostrings::DNAStringSet(taxa_names(ps))
+names(dna) <- taxa_names(ps)
+ps.dna <- merge_phyloseq(ps, dna)
+taxa_names(ps.dna) <- paste0("ASV", seq(ntaxa(ps.dna)))
+ps.dna
+
+saveRDS(ps.dna, file = "ps.dna.rds")
+
+rm(list = ls())
+
+ps <- readRDS("ps.rds")
+ps.dna <- readRDS("ps.dna.rds")
+
+#Salvando apenas os objetos phyloseq
+save(file = "caminho ou nome do arquivo_etal_RAWdata.RData",list = c('ps', 'ps.dna', 'ps.dna.f'))
+```
+
+**nome_etal_preprocessing.RData** contains all the preprocessing data and phyloseq object that is used for all subsequent analysis and with this the whole analysis can be easily replicated
+**nome_etal_RAWdata.Rdata** contains the phyloseq objects needed for further analyses.
