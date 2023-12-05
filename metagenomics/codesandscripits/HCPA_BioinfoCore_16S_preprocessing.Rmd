@@ -235,7 +235,7 @@ summarized_data_filtered <- summarized_data %>%
 write.csv(summarized_data_filtered, file = "summarized_data_filtered.csv", sep=",", dec=".", row.names = FALSE)
 ```
 
-### 0.3.17 Importando a tabela de metadados pronta. As regras para confecção da tabela de metadados são passadas aos pesquisadores previamente à análise. Não fique arrumando tabelas manualmente, pois as chances de erro são enormes e, caso ocorram nessa situação, os erros passam a ser sua responsabilidade. Caso a tabela não esteja de acordo com o preconizado, devolva para o pesquisador e solicite a adequação.
+### 0.3.17 Importando a tabela de metadados pronta. As regras para confecção da tabela de metadados são passadas aos pesquisadores previamente à análise. Não fique arrumando tabelas manualmente, pois as chances de erro são enormes e, caso ocorram nessa situação, os erros passam a ser sua responsabilidade. Caso a tabela não esteja de acordo com o preconizado, devolva para o pesquisador e solicite a adequação. A tabela de metadados é 'obrigatória' para o seguimento da análise visto que é esta tabela que fornece as variáveis utilizadas nas análises posteriores.
 ```{r import_samdf, eval=TRUE, echo=TRUE}
 # Importando o dado manualmente verificado e curado em formato csv
 samdf <- read.csv("summarized_data_filtered2.csv") #samdf significa 'sample dataframe', e é o nome usado para a tabela de metadados. 
@@ -269,4 +269,18 @@ ps.dna <- readRDS("ps.dna.rds")
 save(file = "caminho ou nome do arquivo_etal_RAWdata.RData",list = c('ps', 'ps.dna'))
 ```
 
+### 0.3.18 Merge phyloseq objects
+Esta parte só deve ser utilizada caso existam múltiplos objetos ps provenientes de diferentes corridas de NGS/pre-processamento e que precisam ser agrupados para análises posteriores. Se não houver essa necessidade, esta parte pode ser removida.
+```{r merge_ps, eval=TRUE, echo=TRUE}
+library(phyloseq)
+#Não utilizar os ps.dna, pois isso ocasionará conflito de nome dentre as ASVs.
+#Copiar, colar e renomear quantas linhas forem necessárias, conforme o número de objetos ps que forem ser agrupados.
+ps1 <- readRDS("/home/metagenomica/Downloads/ps1.rds") #Para evitar erros, colocar todo o caminho para o arquivo.
+ps2 <- readRDS("/home/metagenomica/Downloads/ps2.rds")
+
+ps.all <- merge_phyloseq(ps1, ps2)
+
+#Salvando o objeto ps agrupado
+saveRDS(ps.all, file = "ps.all.rds")
+```
 **nome_etal_RAWdata.Rdata** contains the phyloseq objects needed for further analyses.
