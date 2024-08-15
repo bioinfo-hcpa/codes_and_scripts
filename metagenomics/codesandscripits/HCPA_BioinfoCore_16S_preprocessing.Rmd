@@ -1,10 +1,24 @@
 ---
-title: "Metagenomic 16S analysis of upper respiratory tract of COVID-19 patients"
+title: "titulo do projeto"
 author: "Otávio von Ameln Lovison"
+date: "`r Sys.Date()`"
 output:
   html_document:
-    toc: true
-    toc_depth: 5
+    df_print: paged
+    theme: cerulean
+    highlight: haddock
+    toc: yes
+    toc_depth: 3
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+    code_fold: show
+  word_document: 
+    toc: yes
+    toc_depth: '5'
+  pdf_document:
+    toc: yes
+    toc_depth: '5'
 ---
 Este workflow é baseado na referência https://f1000research.com/articles/5-1492
 ```{r setup, include=FALSE}
@@ -35,10 +49,6 @@ Este chunk deve ser preenchido com o link do repositório onde os dados brutos f
 ```{r download_main_data, eval=FALSE}
 ###Raw data (fastq files)
 download.file('link_do_repositorio',sep = '/'))
-
-### setting up the ASV data to match the formatting of the initial ASV based analysis
-download.file('link_do_repositorio',sep = '/'))
-
 ```
 
 A pasta que armazena os arquivos filtrados é criada automaticamente. As demais pastas devem ser criadas manualmente, a critério do analista. Antes de iniciar a análise, recomendo que: 1 - Crie uma pasta para o projeto; 2 - Faça uma cópia deste arquivo .rmd para a pasta que você criou para o projeto; 3 - Vincule um novo projeto à pasta criada (canto superior direito do RStudio > New project > Selecione o diretório já criado para ser a pasta do projeto); 4 - Crie uma pasta com o nome FASTQ dentro da pasta do projeto para armazenar os arquivos .fastq que serão submetidos à análise.
@@ -63,11 +73,13 @@ fnRs <- fns[grepl("R2", fns)] #Rev
 ii <- sample(length(fnFs), 1)
 for(i in ii) { print(plotQualityProfile(fnFs[1:6]) + ggtitle("Fwd")) } #Entre chaves: intervalo de amostras que serão plotadas
 ```
+In the grayscale, a heatmap illustrates the frequency of each quality score at every base position. The green line represents the median quality score at each position, while the orange lines depict the quartiles of the quality score distribution. Additionally, the red line indicates the scaled proportion of reads that extend to, at least, that particular position.
 
 ### 0.3.3 Reverse Quality Plot
 ```{r rev_q_plot, eval=FALSE, echo=TRUE}
 for(i in ii) { print(plotQualityProfile(fnRs[1:6]) + ggtitle("Rev")) } #Entre chaves: intervalo de amostras que serão plotadas
 ```
+In the grayscale, a heatmap illustrates the frequency of each quality score at every base position. The green line represents the median quality score at each position, while the orange lines depict the quartiles of the quality score distribution. Additionally, the red line indicates the scaled proportion of reads that extend to, at least, that particular position.
 
 ### 0.3.4 Filter and trim - esta etapa realiza a remoção dos primers (trimLeft), truncagem das sequências (truncLen) e filtragem.
 ```{r filter_and_trim, eval=TRUE, echo=TRUE}
@@ -83,8 +95,8 @@ for(i in seq_along(fnFs)) {
   z <- fastqPairedFilter(c(fnFs[[i]], fnRs[[i]]),
                     c(filtFs[[i]], filtRs[[i]]),
                     trimLeft=c(17, 21), 
-                    truncLen=c(240, 240),
-                    maxN=0, maxEE=c(2,2), rm.phix = TRUE,
+                    truncLen=c(240, 240), truncQ = 11,
+                    maxN=0, maxEE=c(1,1), rm.phix = TRUE,
                     compress=TRUE, multithread=TRUE)
   out <- rbind(out, z)
 } 
@@ -108,8 +120,8 @@ rm(list = ls())
 ### 0.3.6 Learning errors - esta etapa vai aprender as taxas de erro de sequenciamento, que será usada para posterior inferência das sequências.
 ```{r learn_err, eval=TRUE, echo=TRUE}
 load('nome_do_arquivo_do_ambiente_preprocessing2.RData')
-ddF <- dada(derepFs[1:79], err=NULL, selfConsist=TRUE, MAX_CONSIST = 20) #Ajustar o intervalo entre chaves com o número de amostras.
-ddR <- dada(derepRs[1:79], err=NULL, selfConsist=TRUE, MAX_CONSIST = 20) #Ajustar o intervalo entre chaves com o número de amostras.
+ddF <- dada(derepFs[1:79], err=NULL, selfConsist=TRUE, MAX_CONSIST = 20, multithread = TRUE) #Ajustar o intervalo entre chaves com o número de amostras.
+ddR <- dada(derepRs[1:79], err=NULL, selfConsist=TRUE, MAX_CONSIST = 20, multithread = TRUE) #Ajustar o intervalo entre chaves com o número de amostras.
 save(file = "nome_do_arquivo_do_ambiente_preprocessing3.RData",list = c('out', 'miseq_path','filt_path','fns','fnFs', 'fnRs', 'ii', 'filtFs', 'filtRs', 'sam.names', 'derepFs', 'derepRs', 'ddF', 'ddR'))
 ```
 
@@ -136,7 +148,7 @@ rm(list = ls())
 ### 0.3.10 Merge paired reads - esta etapa 'monta' as sequências, juntando as fwd e rev. Para isso, é necessário uma complementaridade de pelo menos 12 bases. Se grande parte do dado for perdido nesta etapa, significa que o truncLen do filterandtrim (etapa 0.3.4) foi muito radical. A soma do truncLen das fwd e rev deve ser de, no mínimo, 480. 
 ```{r merge_paired_reads, eval=TRUE, echo=TRUE}
 load('nome_do_arquivo_do_ambiente_preprocessing4.RData')
-mergers <- mergePairs(dadaFs, derepFs, dadaRs, derepRs, verbose = TRUE)
+mergers <- mergePairs(dadaFs, derepFs, dadaRs, derepRs, verbose = TRUE, multithread = TRUE)
 save(file = "nome_do_arquivo_do_ambiente_preprocessing5.RData",list = c('out','miseq_path','filt_path','fns','fnFs', 'fnRs', 'ii', 'filtFs', 'filtRs', 'sam.names', 'derepFs', 'derepRs', 'ddF', 'ddR', 'dadaFs', 'dadaRs', 'mergers'))
 rm(list = ls())
 ```
@@ -157,11 +169,11 @@ save(file = "nome_do_arquivo_do_ambiente_preprocessing7.RData",list=c('out','mis
 rm(list = ls())
 ```
 
-### 0.3.13  Remove non-target-length sequences - aqui é feita a remoção das sequências fora do alvo de tamanho. A região v3v4 possui uma distribuição bimodal de tamanho. Por isso, é possível que sejam observados dois 'picos' de tamanhos de sequência, nas faixas de ~385 e ~407. Uma faixa segura para manter seria algo entre 380 e 415, mas é interessante inspecionar ASVs abundantes fora desta faixa para verificar sua eventual importância. 
+### 0.3.13  Remove non-target-length sequences - aqui é feita a remoção das sequências fora do alvo de tamanho. A região v3v4 possui uma ampla distribuição de tamanho. Por isso, é possível que sejam observados diferentes tamanhos de sequência, na faixa de ~250 a ~500. É interessante remover ASVs fora desta faixa. 
 ```{r rem_non_targ, eval=TRUE, echo=TRUE}
 load('nome_do_arquivo_do_ambiente_preprocessing7.RData')
 table(nchar(getSequences(seqtab2)))
-seqtab <- seqtab2[,nchar(colnames(seqtab2)) %in% seq(380,415)] #Se sobrarem sequências muito fora do intervalo esperado, possivelmente sejam "ruído ou sujeira". Ajustar o intervalo de tamanho de sequências para remover. 
+seqtab <- seqtab2[,nchar(colnames(seqtab2)) %in% seq(250,500)] #Se sobrarem sequências muito fora do intervalo esperado, possivelmente sejam "ruído ou sujeira". Ajustar o intervalo de tamanho de sequências para remover. 
 table(nchar(getSequences(seqtab)))
 ```
 
@@ -170,16 +182,15 @@ table(nchar(getSequences(seqtab)))
 getN <- function(x) sum(getUniques(x))
 track <- cbind(out, sapply(dadaFs, getN),sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab))
 colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
-kbl(track, caption = 'Reads through the pipeline', digits = 1, col.names = c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")) %>%
-  kable_classic(full_width = F, position = "left")
+rownames(track) <- sample.names
 export(track, "Reads through the pipeline.xlsx", rowNames = TRUE) #Exporta em excel para a pasta do projeto. 
 ```
 
 ### 0.3.15 Assign taxonomy - para anotação taxonômica, você deve selecionar o banco de dados desejado (geralmente SILVA é o mais usado. eHOMD para oral e respiratório) e verificar se a versão é a mais atualizada. Preferencialmente utilizar a versão mais atual. Para isso, o arquivo do banco de dados deve ser preparado (treinado) para funcionar com o dada2. Geralmente estes arquivos treinados estão disponíveis no github ou zenodo, e os links podem ser encontrados nos tutoriais do dada2 ou do qiime2. Este arquivo treinado deve ser baixado e o 'caminho' para este arquivo deve ser colocado no código abaixo. Segue o link para os arquivos de bancos de dados treinados e certificados pelo criador do dada2 (https://benjjneb.github.io/dada2/training.html).
 ```{r assign_taxonomy, eval=TRUE, echo=TRUE}
 #Ajustar o link para o arquivo do banco de dados a ser utilizado
-taxtab <- assignTaxonomy(seqtab, "/home/metagenomica/Bancos_de_dados/SILVA/silva_nr99_v138.1_train_set.fa.gz")
-taxtab <- addSpecies(taxtab, "/home/metagenomica/Bancos_de_dados/SILVA/silva_species_assignment_v138.1.fa.gz")
+taxtab <- assignTaxonomy(seqtab, "/home/metagenomica/Bancos_de_dados/SILVA/silva_nr99_v138.1_train_set.fa.gz", multithread = TRUE)
+taxtab <- addSpecies(taxtab, "/home/metagenomica/Bancos_de_dados/SILVA/silva_species_assignment_v138.1.fa.gz", multithread = TRUE)
 save(file = "nome_do_arquivo_do_ambiente_preprocessing8.RData",list=c('out','miseq_path','filt_path','fns','fnFs', 'fnRs', 'ii', 'filtFs', 'filtRs', 'sam.names', 'derepFs', 'derepRs', 'ddF', 'ddR', 'dadaFs', 'dadaRs', 'mergers', 'seqtab.all', 'seqtab2', 'seqtab', 'taxtab'))
 rm(list = ls())
 ```
@@ -269,18 +280,8 @@ ps.dna <- readRDS("ps.dna.rds")
 save(file = "caminho ou nome do arquivo_etal_RAWdata.RData",list = c('ps', 'ps.dna'))
 ```
 
-### 0.3.18 Merge phyloseq objects
-Esta parte só deve ser utilizada caso existam múltiplos objetos ps provenientes de diferentes corridas de NGS/pre-processamento e que precisam ser agrupados para análises posteriores. Se não houver essa necessidade, esta parte pode ser removida.
-```{r merge_ps, eval=TRUE, echo=TRUE}
-library(phyloseq)
-#Não utilizar os ps.dna, pois isso ocasionará conflito de nome dentre as ASVs.
-#Copiar, colar e renomear quantas linhas forem necessárias, conforme o número de objetos ps que forem ser agrupados.
-ps1 <- readRDS("/home/metagenomica/Downloads/ps1.rds") #Para evitar erros, colocar todo o caminho para o arquivo.
-ps2 <- readRDS("/home/metagenomica/Downloads/ps2.rds")
-
-ps.all <- merge_phyloseq(ps1, ps2)
-
-#Salvando o objeto ps agrupado
-saveRDS(ps.all, file = "ps.all.rds")
+### 0.3.19 Session info
+```{r session_info, eval=TRUE, echo=TRUE}
+sessionInfo()
 ```
 **nome_etal_RAWdata.Rdata** contains the phyloseq objects needed for further analyses.
