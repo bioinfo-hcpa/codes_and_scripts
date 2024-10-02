@@ -52,6 +52,7 @@ A pasta que armazena os arquivos filtrados é criada automaticamente. As demais 
 ```{r paths, eval=FALSE, echo=TRUE}
 set.seed(100)
 # Defina os caminhos para os seus dados de cada corrida
+path <- "caminho_para_a_pasta_do_projeto"
 path1 <- "/home/local.hcpa.ufrgs.br/olovison/Projetos/RafaelaRamalho/SepsisxSIRS2024/run1_rafa"
 path2 <- "/home/local.hcpa.ufrgs.br/olovison/Projetos/RafaelaRamalho/SepsisxSIRS2024/run2_rafa"
 path3 <- "/home/local.hcpa.ufrgs.br/olovison/Projetos/RafaelaRamalho/SepsisxSIRS2024/run3_rafa"
@@ -198,6 +199,11 @@ save(file = "Guerra_etal2024_preprocessing3.RData",list = c('out1', 'out2', 'out
 ### 0.3.7 Construct Sequence Table, merge runs, remove chimeras and check the output - aqui ocorre a construção da tabela de sequências, o agrupamento das tabelas das diferentes corridas e a remoção de quimeras. 
 ```{r seqtaball_remchim, eval=TRUE, echo=TRUE}
 #load('Guerra_etal2024_preprocessing3.RData')
+
+path <- 'caminho_para_a_pasta_do_projeto'
+Preprocessing = paste(path,"/Preprocessing/",sep = "")
+dir.create(Preprocessing)
+
 #Construindo as tabelas das sequencias
 seqtab1 <- makeSequenceTable(mergers1[!grepl("Mock", names(mergers1))]) #"Mock" é o nome da "mock community - controle interno. Essa linha remove a mock da tabela
 seqtab2 <- makeSequenceTable(mergers2[!grepl("Mock", names(mergers2))])
@@ -205,12 +211,13 @@ seqtab3 <- makeSequenceTable(mergers3[!grepl("Mock", names(mergers3))])
 
 #Agrupando as tabelas
 seqtab.all <- mergeSequenceTables(seqtab1, seqtab2, seqtab3)
-saveRDS(seqtab.all, "seqtab.all.rds")
+FileName <- paste(Preprocessing,"/seqtab.all.rds", sep = "")
+saveRDS(seqtab.all, fileName)
 
 # Remover quimeras da tabela agrupada
 seqtab.nochim <- removeBimeraDenovo(seqtab.all, method="consensus", multithread=TRUE, verbose=TRUE)
-
-saveRDS(seqtab.nochim, "seqtab.nochim.rds")
+FileName <- paste(Preprocessing,"/seqtab.nochim.rds", sep = "")
+saveRDS(seqtab.nochim, fileName)
 
 #Verificando o percentual de sequências remanescentes
 sum(seqtab.nochim)/sum(seqtab.all)
@@ -236,7 +243,10 @@ samdf <- read.csv("samdf.csv") #samdf significa 'sample dataframe', e é o nome 
 
 track.full <- cbind(samdf$sampleID, track.full)
 colnames(track.full) <- c("sampleID", "input", "filtered", "merged", "nochim")
-export(track.full, "Reads through the pipeline.xlsx") #Exporta em excel para a pasta do projeto. 
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(Preprocessing,"/Reads through the pipeline.xlsx", sep = "")
+write_xlsx(track,FileName) 
 ```
 
 ### 0.3.9 Assign taxonomy - para anotação taxonômica, você deve selecionar o banco de dados desejado (geralmente SILVA é o mais usado. eHOMD para oral e respiratório) e verificar se a versão é a mais atualizada. Preferencialmente utilizar a versão mais atual. Para isso, o arquivo do banco de dados deve ser preparado (treinado) para funcionar com o dada2. Geralmente estes arquivos treinados estão disponíveis no github ou zenodo, e os links podem ser encontrados nos tutoriais do dada2 ou do qiime2. Este arquivo treinado deve ser baixado e o 'caminho' para este arquivo deve ser colocado no código abaixo. Segue o link para os arquivos de bancos de dados treinados e certificados pelo criador do dada2 (https://benjjneb.github.io/dada2/training.html).

@@ -53,7 +53,7 @@ download.file('link_do_repositorio',sep = '/'))
 
 A pasta que armazena os arquivos filtrados é criada automaticamente. As demais pastas devem ser criadas manualmente, a critério do analista. Antes de iniciar a análise, recomendo que: 1 - Crie uma pasta para o projeto; 2 - Faça uma cópia deste arquivo .rmd para a pasta que você criou para o projeto; 3 - Vincule um novo projeto à pasta criada (canto superior direito do RStudio > New project > Selecione o diretório já criado para ser a pasta do projeto); 4 - Crie uma pasta com o nome FASTQ dentro da pasta do projeto para armazenar os arquivos .fastq que serão submetidos à análise.
 ***IMPORTANTE***
-Preferencialmente, cada corrida de sequenciamento deve ser pré-processada separadamente e os objetos phyloseq agrupados posteriormente para a análise.
+Preferencialmente, cada corrida de sequenciamento deve ser pré-processada separadamente e os objetos phyloseq agrupados posteriormente para a análise. Se o seu dado for proveniente de mais de uma corrida, utilize o script para BIG DATA.
 
 ## 0.3 Preprocessing
 ### 0.3.1 Setting the paths
@@ -120,8 +120,8 @@ rm(list = ls())
 ### 0.3.6 Learning errors - esta etapa vai aprender as taxas de erro de sequenciamento, que será usada para posterior inferência das sequências.
 ```{r learn_err, eval=TRUE, echo=TRUE}
 load('nome_do_arquivo_do_ambiente_preprocessing2.RData')
-ddF <- dada(derepFs[1:79], err=NULL, selfConsist=TRUE, MAX_CONSIST = 20, multithread = TRUE) #Ajustar o intervalo entre chaves com o número de amostras.
-ddR <- dada(derepRs[1:79], err=NULL, selfConsist=TRUE, MAX_CONSIST = 20, multithread = TRUE) #Ajustar o intervalo entre chaves com o número de amostras.
+ddF <- dada(derepFs[1:79], err=NULL, selfConsist=TRUE, MAX_CONSIST = 20, nbases=1e8, multithread = TRUE) #Ajustar o intervalo entre chaves com o número de amostras.
+ddR <- dada(derepRs[1:79], err=NULL, selfConsist=TRUE, MAX_CONSIST = 20, nbases=1e8, multithread = TRUE) #Ajustar o intervalo entre chaves com o número de amostras.
 save(file = "nome_do_arquivo_do_ambiente_preprocessing3.RData",list = c('out', 'miseq_path','filt_path','fns','fnFs', 'fnRs', 'ii', 'filtFs', 'filtRs', 'sam.names', 'derepFs', 'derepRs', 'ddF', 'ddR'))
 ```
 
@@ -183,7 +183,14 @@ getN <- function(x) sum(getUniques(x))
 track <- cbind(out, sapply(dadaFs, getN),sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab))
 colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
 rownames(track) <- sample.names
-export(track, "Reads through the pipeline.xlsx", rowNames = TRUE) #Exporta em excel para a pasta do projeto. 
+
+path <- 'caminho_para_a_pasta_do_projeto'
+Preprocessing = paste(path,"/Preprocessing/",sep = "")
+dir.create(Preprocessing)
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(Preprocessing,"/Reads through the pipeline.xlsx", sep = "")
+write_xlsx(track,FileName) 
 ```
 
 ### 0.3.15 Assign taxonomy - para anotação taxonômica, você deve selecionar o banco de dados desejado (geralmente SILVA é o mais usado. eHOMD para oral e respiratório) e verificar se a versão é a mais atualizada. Preferencialmente utilizar a versão mais atual. Para isso, o arquivo do banco de dados deve ser preparado (treinado) para funcionar com o dada2. Geralmente estes arquivos treinados estão disponíveis no github ou zenodo, e os links podem ser encontrados nos tutoriais do dada2 ou do qiime2. Este arquivo treinado deve ser baixado e o 'caminho' para este arquivo deve ser colocado no código abaixo. Segue o link para os arquivos de bancos de dados treinados e certificados pelo criador do dada2 (https://benjjneb.github.io/dada2/training.html).
