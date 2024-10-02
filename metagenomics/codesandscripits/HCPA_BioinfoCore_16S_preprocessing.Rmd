@@ -60,6 +60,9 @@ Preferencialmente, cada corrida de sequenciamento deve ser pré-processada separ
 ```{r paths, eval=FALSE, echo=TRUE}
 set.seed(100)
 #Setting the paths and listing files
+path <- 'caminho_para_a_pasta_do_projeto'
+Preprocessing = paste(path,"/Preprocessing/",sep = "")
+dir.create(Preprocessing)
 miseq_path <- file.path("caminho para os fastq/FASTQ") #Aqui você cola o caminho para a pasta onde os .fastq estão armazenados
 filt_path <- file.path("caminho para os filtrados/FASTQ/filtered") #Aqui você cola o mesmo caminho acima, mantendo o /filtered. 
 fns <- sort(list.files("caminho para os fastq/FASTQ", full.names = TRUE))
@@ -72,12 +75,20 @@ fnRs <- fns[grepl("R2", fns)] #Rev
 ```{r fwd_q_plot, eval=FALSE, echo=TRUE}
 ii <- sample(length(fnFs), 1)
 for(i in ii) { print(plotQualityProfile(fnFs[1:6]) + ggtitle("Fwd")) } #Entre chaves: intervalo de amostras que serão plotadas
+full.fwd.quality.plot <- plotQualityProfile(fnFs[1:6]) + ggtitle("Fwd") #Entre chaves: coloque o intervalo total de amostras
+#Salvando
+FileName <- paste(Preprocessing,"/Fwd Quality Plot.pdf", sep = "")
+ggsave(FileName, plot = full.fwd.quality.plot, width = 20, height = 20, units = "in", dpi = 300)
 ```
 In the grayscale, a heatmap illustrates the frequency of each quality score at every base position. The green line represents the median quality score at each position, while the orange lines depict the quartiles of the quality score distribution. Additionally, the red line indicates the scaled proportion of reads that extend to, at least, that particular position.
 
 ### 0.3.3 Reverse Quality Plot
 ```{r rev_q_plot, eval=FALSE, echo=TRUE}
 for(i in ii) { print(plotQualityProfile(fnRs[1:6]) + ggtitle("Rev")) } #Entre chaves: intervalo de amostras que serão plotadas
+full.rev.quality.plot <- plotQualityProfile(fnRs[1:6]) + ggtitle("Rev") #Entre chaves: coloque o intervalo total de amostras
+#Salvando
+FileName <- paste(Preprocessing,"/Rev Quality Plot.pdf", sep = "")
+ggsave(FileName, plot = full.rev.quality.plot, width = 20, height = 20, units = "in", dpi = 300)
 ```
 In the grayscale, a heatmap illustrates the frequency of each quality score at every base position. The green line represents the median quality score at each position, while the orange lines depict the quartiles of the quality score distribution. Additionally, the red line indicates the scaled proportion of reads that extend to, at least, that particular position.
 
@@ -186,7 +197,6 @@ rownames(track) <- sample.names
 
 path <- 'caminho_para_a_pasta_do_projeto'
 Preprocessing = paste(path,"/Preprocessing/",sep = "")
-dir.create(Preprocessing)
 
 # Se quiser exportar para um arquivo Excel
 FileName <- paste(Preprocessing,"/Reads through the pipeline.xlsx", sep = "")
