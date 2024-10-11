@@ -193,7 +193,12 @@ table(nchar(getSequences(seqtab)))
 getN <- function(x) sum(getUniques(x))
 track <- cbind(out, sapply(dadaFs, getN),sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab))
 colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
-rownames(track) <- sample.names
+
+# Adiciona a coluna sampleID ao data frame track
+track$sampleID <- sam.names
+
+# Reordena as colunas para colocar sampleID como a primeira
+track <- track[, c("sampleID", setdiff(names(track), "sampleID"))]
 
 path <- 'caminho_para_a_pasta_do_projeto'
 Preprocessing = paste(path,"/Preprocessing/",sep = "")

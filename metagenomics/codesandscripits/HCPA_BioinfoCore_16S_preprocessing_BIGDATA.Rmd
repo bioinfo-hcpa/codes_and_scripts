@@ -263,6 +263,12 @@ track <- rbind(out1, out2, out3)
 #Combinar track com tabela agrupada após remoção de chimeras
 track.full <- cbind(track, rowSums(seqtab.all), rowSums(seqtab.nochim))
 
+# Adiciona a coluna sampleID ao data frame track
+track$sampleID <- row.names(seqtab.nochim)
+
+# Reordena as colunas para colocar sampleID como a primeira
+track <- track[, c("sampleID", setdiff(names(track), "sampleID"))]
+
 # Importando o dado manualmente verificado e curado em formato csv
 samdf <- read.csv("samdf.csv") #samdf significa 'sample dataframe', e é o nome usado para a tabela de metadados. 
 
