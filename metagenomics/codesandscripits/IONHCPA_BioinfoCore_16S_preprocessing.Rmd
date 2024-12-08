@@ -1,0 +1,280 @@
+---
+title: "Título do projeto"
+author: "Otávio von Ameln Lovison"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+    latex_engine: xelatex
+  word_document: 
+    toc: yes
+    toc_depth: '5'
+  html_document:
+    df_print: paged
+    theme: cerulean
+    highlight: haddock
+    toc: yes
+    toc_depth: 3
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+    code_fold: show
+always_allow_html: yes
+---
+Este workflow é baseado na referência https://f1000research.com/articles/5-1492
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, eval = F, warning = F, message = F, fig.width = 15, fig.height = 15, 
+                      fig.align = 'center')
+```
+
+# 0 - Prep - descrição do estudo. Exemplo abaixo:
+Data for this analysis is from the project 'Proteomics and Metagenomics for Identification and Characterization of COVID-19 Biomarkers', ethics approval 4.355.906, Hospital de Clínicas de Porto Alegre (HCPA). The bioinformatics analyses were performed in the Bioinformatics Core of HCPA. This document presents the metagenomics preprocessing workflow for this project.
+
+In this analysis we include 80 nasal and oropharynx swabs from HCPA biobank, collected to perform rt-qPCR for SARS-CoV-2 detection. The samples were selected using COVID-19 severity class (WHO, 2020), as follows: Group 1 (n = 22): positive rt-qPCR for SARS-CoV-2 - COVID-19 - moderate; Group 2 (n = 19, control group): negative rt-qPCR for SARS-CoV-2 (confirmed with a second test), previously classified as moderate COVID-19 by the physician; Group 3 (n = 20): positive rt-qPCR for SARS-CoV-2 - COVID-19 - severe/critical; Group 4 (n = 18, control group): asymptomatic, highly exposed inpatients and healthcare workers, who tested negative by rt-qPCR for SARS-CoV-2.      
+
+## 0.1 - Load libraries
+```{r libraries, eval=TRUE}
+rm(list = ls())
+library(knitr)
+library(phyloseq)
+library(kableExtra)
+library(ggplot2)
+library(gridExtra)
+library(dada2)
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(writexl)
+```
+
+TODOS AS ETAPAS COMPUTACIONALMENTE PESADAS/DEMORADAS CONTÉM UM SAVE PARA SEGURANÇA DO PROCESSO
+## 0.2 Download main data - chunk de reprodutibilidade. Caso alguém tenha interesse em baixar os dados depositados da publicação.
+Este chunk deve ser preenchido com o link do repositório onde os dados brutos foram depositados previamente à submissão.
+```{r download_main_data, eval=FALSE}
+###Raw data (fastq files)
+download.file('link_do_repositorio',sep = '/'))
+```
+
+A pasta que armazena os arquivos filtrados é criada automaticamente. As demais pastas devem ser criadas manualmente, a critério do analista. Antes de iniciar a análise, recomendo que: 1 - Crie uma pasta para o projeto; 2 - Faça uma cópia deste arquivo .rmd para a pasta que você criou para o projeto; 3 - Vincule um novo projeto à pasta criada (canto superior direito do RStudio > New project > Selecione o diretório já criado para ser a pasta do projeto); 4 - Crie uma pasta com o nome FASTQ dentro da pasta do projeto para armazenar os arquivos .fastq que serão submetidos à análise.
+***IMPORTANTE***
+Preferencialmente, cada corrida de sequenciamento deve ser pré-processada separadamente e os objetos phyloseq agrupados posteriormente para a análise. Se o seu dado for proveniente de mais de uma corrida, utilize o script para BIG DATA.
+
+## 0.3 Preprocessing
+### 0.3.1 Setting the paths
+```{r paths, eval=FALSE, echo=TRUE}
+set.seed(100)
+#Setting the paths and listing files
+path <- "/home/otavio/Projects/Peruzzo_et_al_2024/"
+Preprocessing = paste(path,"/Preprocessing/",sep = "")
+dir.create(Preprocessing)
+ion_path <- file.path("/home/otavio/Projects/Peruzzo_et_al_2024/fastq/") #Aqui você cola o caminho para a pasta onde os .fastq estão armazenados
+filt_path <- file.path("/home/otavio/Projects/Peruzzo_et_al_2024/fastq/filtered") #Aqui você cola o mesmo caminho acima, mantendo o /filtered. 
+fns <- sort(list.files("/home/otavio/Projects/Peruzzo_et_al_2024/fastq/", full.names = TRUE))
+#As duas linhas abaixo vão 'puxar' a identificação dos .fastq. Certifique-se que os nomes das amostras estejam iguais nos arquivos e na variável que será vinculada como identificador de amostra (sampleID) na tabela de metadados.
+fnFs <- fns[grepl("R", fns)] #Fwd
+# Extraindo os nomes reais das amostras
+sample.names <- sapply(strsplit(basename(fnFs), "\\."), `[`, 2)
+
+# Adicionando zeros para amostras com apenas um numeral, começando com C ou P
+sample.names <- ifelse(grepl("^[CP]\\d$", sample.names),
+                       sub("^([CP])(\\d)$", "\\10\\2", sample.names),
+                       sample.names)
+
+# Visualizando os nomes corrigidos
+print(sample.names)
+```
+
+### 0.3.2 Quality Plot
+```{r fwd_q_plot, eval=FALSE, echo=TRUE}
+## Inspecionar a qualidade das reads
+plotQualityProfile(fnFs[1:6]) # aqui ajusta o intervalo de amostras que devem ser avaliadas quanto a qualidade
+full.fwd.quality.plot <- plotQualityProfile(fnFs[1:40]) #Entre chaves: coloque o intervalo total de amostras
+
+#Salvando
+FileName <- paste(Preprocessing,"/Quality Plot.pdf", sep = "")
+ggsave(FileName, plot = full.fwd.quality.plot, width = 20, height = 20, units = "in", dpi = 300)
+```
+In the grayscale, a heatmap illustrates the frequency of each quality score at every base position. The green line represents the median quality score at each position, while the orange lines depict the quartiles of the quality score distribution. Additionally, the red line indicates the scaled proportion of reads that extend to, at least, that particular position.
+
+### 0.3.3 Filter and trim - esta etapa realiza a remoção dos primers (trimLeft), truncagem das sequências (truncLen) e filtragem.
+```{r filter_and_trim, eval=TRUE, echo=TRUE}
+## Designar os nomes dos arquivos fastq.gz filtrados
+filtFs <- file.path(path, "filtered", paste0(sample.names, "_F_filt.fastq.gz")) # coloca os arquivos filtrados na pasta ‘filtered’
+names(filtFs) <- sample.names # nomeia os filtrados
+
+#TrimLeft: Tamanho do primer para remoção. 16S v4 Ion Torrent é 19 + 15 pela péssima qualidade inicial do NGS.
+#TruncLen: Tamanho para truncar as sequências, baseado no plot de qualidade. Tentar manter a média de qualidade (linha verde) acima de 20. O tamanho do amplicon utilizando os primers usuais é ~291. 
+out <- filterAndTrim(fnFs, filtFs, truncLen=280,maxN=0, maxEE=2, truncQ=2, rm.phix=TRUE, compress=TRUE, multithread=TRUE, trimLeft=34)
+
+save(file = "Peruzzo_et_al_2024_preprocessing.RData",list = c('out', 'ion_path','filt_path','fns','fnFs', 'filtFs','sample.names'))
+#rm(list = ls()) #Se quiser dar continuidade na análise sem limpar o ambiente, é só comentar (colocar o # na frente) desta linha.
+```
+
+### 0.3.4 Learning errors - esta etapa vai aprender as taxas de erro de sequenciamento, que será usada para posterior inferência das sequências.
+```{r learn_err, eval=TRUE, echo=TRUE}
+#load('Peruzzo_et_al_2024_preprocessing.RData')
+errF <- learnErrors(filtFs, multithread=TRUE, MAX_CONSIST = 20)
+save(file = "Peruzzo_et_al_2024_preprocessing2.RData",list = c('out', 'ion_path','filt_path','fns','fnFs', 'filtFs', 'sample.names', 'errF'))
+```
+
+### 0.3.5 Error rates
+```{r plot_err_rate, eval=TRUE, echo=TRUE}
+plotErrors(errF,nominalQ=TRUE)
+```
+
+### 0.3.6 Sample Inference - esta etapa roda o algoritmo 'core' da análise, que vai inferir se as sequências são verdadeiras ou falsas.
+```{r sam_infer, eval=TRUE, echo=TRUE}
+#load('Peruzzo_et_al_2024_preprocessing2.RData')
+## Inferência de amostras
+dadaFs <- dada(filtFs, err=errF, multithread=TRUE, HOMOPOLYMER_GAP_PENALTY=-1, BAND_SIZE=32, pool=TRUE) #Pool = TRUE - maior sensibilidade
+
+save(file = "Peruzzo_et_al_2024_preprocessing3.RData",list = c('out','ion_path','filt_path','fns','fnFs', 'filtFs', 'sample.names', 'errF', 'dadaFs'))
+#rm(list = ls())
+```
+
+### 0.3.7 Construct Sequence Table - aqui ocorre a construção da tabela de sequências. 
+```{r const_seqtaball, eval=TRUE, echo=TRUE}
+#load('Peruzzo_et_al_2024_preprocessing3.RData')
+## Construindo a tabela ASV
+seqtab <- makeSequenceTable(dadaFs[!grepl("Mock", names(dadaFs))])#"Mock" é o nome da "mock community - controle interno. Essa linha remove a mock da tabela
+
+save(file = "Peruzzo_et_al_2024_preprocessing4.RData",list=c('out','ion_path','filt_path','fns','fnFs', 'filtFs', 'sample.names', 'errF', 'dadaFs', 'seqtab'))
+```
+
+### 0.3.8 Remove chimeras and check the output - aqui ocorre a remoção de quimeras e avaliação do percentual do dado que não era quimera.
+```{r rem_chim, eval=TRUE, echo=TRUE}
+#load('Peruzzo_et_al_2024_preprocessing4.RData')
+seqtab.nochim <- removeBimeraDenovo(seqtab, multithread=TRUE, verbose = TRUE)
+sum(seqtab.nochim)/sum(seqtab)
+save(file = "Peruzzo_et_al_2024_preprocessing5.RData",list=c('out','ion_path','filt_path','fns','fnFs', 'filtFs', 'sample.names', 'dadaFs', 'errF', 'seqtab', 'seqtab.nochim'))
+#rm(list = ls())
+```
+
+### 0.3.9  Remove non-target-length sequences - aqui é feita a remoção das sequências fora do alvo de tamanho. A região v4 possui uma ampla distribuição de tamanho. Por isso, é possível que sejam observados diferentes tamanhos de sequência. Faça sua avaliação. 
+```{r rem_non_targ, eval=TRUE, echo=TRUE}
+#load('Peruzzo_et_al_2024_preprocessing5.RData')
+table(nchar(getSequences(seqtab.nochim)))
+seqtab.final <- seqtab.nochim[,nchar(colnames(seqtab.nochim)) %in% seq(250,500)] #Se sobrarem sequências muito fora do intervalo esperado, possivelmente sejam "ruído ou sujeira". Ajustar o intervalo de tamanho de sequências para remover. 
+table(nchar(getSequences(seqtab)))
+```
+
+### 0.3.10 Track reads through the pipeline - este chunk gera a tabela de rastreabilidade das sequências ao longo do processo.
+```{r track_reads, eval=TRUE, echo=TRUE}
+getN <- function(x) sum(getUniques(x))
+track <- as.data.frame(cbind(out, sapply(dadaFs, getN), rowSums(seqtab.nochim)))
+colnames(track) <- c("input", "filtered", "denoised", "nonchim")
+
+# Adiciona a coluna sampleID ao data frame track
+track$sampleID <- rownames(seqtab.nochim)
+
+# Reordena as colunas para colocar sampleID como a primeira
+track <- track[, c("sampleID", setdiff(names(track), "sampleID"))]
+
+# Criando a função para ordenar corretamente pela coluna sampleID
+# Extrai a letra e os números de sampleID para ordenar numericamente
+track <- track[order(substring(track$sampleID, 1, 1), 
+                     as.numeric(substring(track$sampleID, 2))), ]
+
+path <- '/home/otavio/Projects/Peruzzo_et_al_2024/'
+Preprocessing = paste(path,"/Preprocessing/",sep = "")
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(Preprocessing,"/Reads through the pipeline.xlsx", sep = "")
+write_xlsx(track,FileName) 
+```
+
+### 0.3.11 Assign taxonomy - para anotação taxonômica, você deve selecionar o banco de dados desejado (geralmente SILVA é o mais usado. eHOMD para oral e respiratório) e verificar se a versão é a mais atualizada. Preferencialmente utilizar a versão mais atual. Para isso, o arquivo do banco de dados deve ser preparado (treinado) para funcionar com o dada2. Geralmente estes arquivos treinados estão disponíveis no github ou zenodo, e os links podem ser encontrados nos tutoriais do dada2 ou do qiime2. Este arquivo treinado deve ser baixado e o 'caminho' para este arquivo deve ser colocado no código abaixo. Segue o link para os arquivos de bancos de dados treinados e certificados pelo criador do dada2 (https://benjjneb.github.io/dada2/training.html).
+```{r assign_taxonomy, eval=TRUE, echo=TRUE}
+#Ajustar o link para o arquivo do banco de dados a ser utilizado
+taxtab <- assignTaxonomy(seqtab.nochim, "/home/otavio/Bancos_de_dados/silva_nr99_v138.2_toGenus_trainset.fa.gz", multithread = TRUE)
+save(file = "Peruzzo_et_al_2024_preprocessing6.RData",list=c('out','ion_path','filt_path','fns','fnFs', 'filtFs', 'sample.names', 'errF', 'dadaFs', 'seqtab', 'seqtab.nochim', 'taxtab'))
+#rm(list = ls())
+```
+
+### 0.3.12 Metadata engineering - se for necessário executar alguma engenharia de dados antes de montar o objeto phyloseq. Esse chunk de exemplo foi utilizado para ajustar a query do HCPA e fundir com a tabela de metadados original. A engenharia de dados pode ser muito trabalhosa e específica para cada caso. NÃO CONFIAR NA VERSÃO FREE DO CHATGPT OU DE QUALQUER OUTRA IA PARA ESTE TRABALHO (comentado dia 16/11/2023). Em caso de necessidade, procure alguém com habilidades de engenharia de dados. 
+```{r metadata_eng, eval=TRUE, echo=TRUE}
+# Lendo o Excel
+curated_dataset <- read_excel("caminho ou nome do arquivo/curated_dataset.xlsx")
+
+# Ajuste de data/hora
+curated_dataset$Extraction_date <- as.POSIXct(curated_dataset$Extraction_date, format = "%Y-%m-%dT%H:%M:%S.%OS", tz = "UTC")
+
+# Agrupando o dado por "BiobankID" e "Analyte", e criar uma nova coluna rankeando pela data de extração
+curated_dataset <- curated_dataset %>% 
+  group_by(BiobankID, Analyte) %>% 
+  mutate(rank = dense_rank(Extraction_date))
+
+# Cria uma nova coluna do analito rankeado
+curated_dataset$Analyte_ranked <- paste0(curated_dataset$Analyte, " (", curated_dataset$rank, ")")
+
+# "pivot" do dado baseado no ranking dos analitos e na coluna "Result"
+curated_dataset_wide <- spread(curated_dataset, key = "Analyte_ranked", value = "Result")
+
+# Lendo o segundo Excel
+Lovison_etal_metadata <- read_excel("caminho ou nome para o arquivo_metadata.xlsx")
+
+# Convertendo "BiobankID" em 'double' 
+Lovison_etal_metadata$BiobankID <- as.double(Lovison_etal_metadata$BiobankID)
+
+# Juntando os dois dataframes por "BiobankID"
+merged_data <- left_join(Lovison_etal_metadata, curated_dataset_wide, by = "BiobankID")
+
+# Removendo colunas desnecessárias
+merged_data <- select(merged_data, -Analyte, -rank, -Extraction_date, -CollectionDate, -Exam, -HospitalLocation)
+
+#Summarize
+summarized_data <- merged_data %>%
+  group_by(sampleID) %>%
+  summarize(across(where(is.numeric), mean, na.rm = TRUE), .groups = "drop")
+
+summarized_data <- inner_join(Lovison_etal_metadata, summarized_data, by = "sampleID")
+
+# Removendo as amostras que não atingiram o critério de qualidade para dar "match" com o dado pré-processado
+summarized_data_filtered <- summarized_data %>%
+  filter(sampleID != "M02", sampleID != "M09", sampleID != "M49", sampleID != "M71", sampleID != "M79")
+
+# Exportando o dado tratado como CSV
+write.csv(summarized_data_filtered, file = "summarized_data_filtered.csv", sep=",", dec=".", row.names = FALSE)
+```
+
+### 0.3.13 Importando a tabela de metadados pronta. As regras para confecção da tabela de metadados são passadas aos pesquisadores previamente à análise. Não fique arrumando tabelas manualmente, pois as chances de erro são enormes e, caso ocorram nessa situação, os erros passam a ser sua responsabilidade. Caso a tabela não esteja de acordo com o preconizado, devolva para o pesquisador e solicite a adequação. A tabela de metadados é 'obrigatória' para o seguimento da análise visto que é esta tabela que fornece as variáveis utilizadas nas análises posteriores.
+```{r import_samdf, eval=TRUE, echo=TRUE}
+# Importando o dado manualmente verificado e curado em formato csv
+samdf <- read_excel("metadados.xlsx") #samdf significa 'sample dataframe', e é o nome usado para a tabela de metadados. 
+samdf <- as.data.frame(samdf)
+rownames(samdf) <- samdf$SampleID #Aqui é feita a vinculação do identificador da tabela de metadados (sampleID) com o rownames, que é o nome de amostra extraído do nome dos arquivos nas etapas anteriores. É fundamental que os nomes sejam iguais, senão ocorrerá um erro. SampleID é o nome da coluna (cabeçalho) que contém o identificador da amostra. Esta etapa é importante pois diversas funções utilizam o rownames internamente na sua execução.  
+```
+
+### 0.3.14 Construct the phyloseq object
+```{r phyloseq_object, eval=TRUE, echo=TRUE}
+#Produzindo o objeto phyloseq
+ps <- phyloseq(tax_table(taxtab),
+               sample_data(samdf),
+               otu_table(seqtab.nochim, taxa_are_rows = FALSE))
+ps
+saveRDS(ps, file = "ps.rds") #Salvando o objeto ps 'bruto'. Nesse objeto, o nome da sequẽncia será a própria sequência.
+
+#Renomeando as sequências para um melhor manejo 
+dna <- Biostrings::DNAStringSet(taxa_names(ps))
+names(dna) <- taxa_names(ps)
+ps.dna <- merge_phyloseq(ps, dna)
+taxa_names(ps.dna) <- paste0("ASV", seq(ntaxa(ps.dna)))
+ps.dna
+
+saveRDS(ps.dna, file = "ps.dna.rds") #Neste objeto, o nome da sequência será ASV e um respectivo número. Este objeto será o usual para a análise. Ao longo da análise, para figuras em que seja necessário formatar os nomes com a taxonomia, deverá ser usado a função 'format_to_best_hit', que possivelmente já estará setada no chunk. Essa formatação não pode ser feita previamente pois algumas funções da análise não toleram essa formatação. 
+
+rm(list = ls())
+
+ps <- readRDS("ps.rds")
+ps.dna <- readRDS("ps.dna.rds")
+
+#Salvando apenas os objetos phyloseq
+save(file = "Peruzzo_et_al_2024_preprocessingRAW.RData",list = c('ps', 'ps.dna'))
+```
+
+### 0.3.18 Session info
+```{r session_info, eval=TRUE, echo=TRUE}
+sessionInfo()
+```
+**Peruzzo_et_al_2024_preprocessingRAW.RData** contains the phyloseq objects needed for further analyses.

@@ -1,8 +1,15 @@
 ---
-title: "titulo do projeto"
+title: "Título do projeto"
 author: "Otávio von Ameln Lovison"
 date: "`r Sys.Date()`"
 output:
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+    latex_engine: xelatex
+  word_document: 
+    toc: yes
+    toc_depth: '5'
   html_document:
     df_print: paged
     theme: cerulean
@@ -13,12 +20,7 @@ output:
       collapsed: no
       smooth_scroll: yes
     code_fold: show
-  word_document: 
-    toc: yes
-    toc_depth: '5'
-  pdf_document:
-    toc: yes
-    toc_depth: '5'
+always_allow_html: yes
 ---
 Este workflow é baseado na referência https://f1000research.com/articles/5-1492
 ```{r setup, include=FALSE}
@@ -41,6 +43,10 @@ library(ggplot2)
 library(gridExtra)
 library(dada2)
 library(rio)
+library(writexl)
+library(readxl)
+library(dplyr)
+library(tidyr)
 ```
 
 TODOS AS ETAPAS COMPUTACIONALMENTE PESADAS/DEMORADAS CONTÉM UM SAVE PARA SEGURANÇA DO PROCESSO
@@ -159,7 +165,7 @@ rm(list = ls())
 ### 0.3.10 Merge paired reads - esta etapa 'monta' as sequências, juntando as fwd e rev. Para isso, é necessário uma complementaridade de pelo menos 12 bases. Se grande parte do dado for perdido nesta etapa, significa que o truncLen do filterandtrim (etapa 0.3.4) foi muito radical. A soma do truncLen das fwd e rev deve ser de, no mínimo, 480. 
 ```{r merge_paired_reads, eval=TRUE, echo=TRUE}
 load('nome_do_arquivo_do_ambiente_preprocessing4.RData')
-mergers <- mergePairs(dadaFs, derepFs, dadaRs, derepRs, verbose = TRUE, multithread = TRUE)
+mergers <- mergePairs(dadaFs, derepFs, dadaRs, derepRs, verbose = TRUE)
 save(file = "nome_do_arquivo_do_ambiente_preprocessing5.RData",list = c('out','miseq_path','filt_path','fns','fnFs', 'fnRs', 'ii', 'filtFs', 'filtRs', 'sam.names', 'derepFs', 'derepRs', 'ddF', 'ddR', 'dadaFs', 'dadaRs', 'mergers'))
 rm(list = ls())
 ```
@@ -212,18 +218,12 @@ write_xlsx(track,FileName)
 ```{r assign_taxonomy, eval=TRUE, echo=TRUE}
 #Ajustar o link para o arquivo do banco de dados a ser utilizado
 taxtab <- assignTaxonomy(seqtab, "/home/metagenomica/Bancos_de_dados/SILVA/silva_nr99_v138.1_train_set.fa.gz", multithread = TRUE)
-taxtab <- addSpecies(taxtab, "/home/metagenomica/Bancos_de_dados/SILVA/silva_species_assignment_v138.1.fa.gz", multithread = TRUE)
 save(file = "nome_do_arquivo_do_ambiente_preprocessing8.RData",list=c('out','miseq_path','filt_path','fns','fnFs', 'fnRs', 'ii', 'filtFs', 'filtRs', 'sam.names', 'derepFs', 'derepRs', 'ddF', 'ddR', 'dadaFs', 'dadaRs', 'mergers', 'seqtab.all', 'seqtab2', 'seqtab', 'taxtab'))
 rm(list = ls())
 ```
 
 ### 0.3.16 Metadata engineering - se for necessário executar alguma engenharia de dados antes de montar o objeto phyloseq. Esse chunk de exemplo foi utilizado para ajustar a query do HCPA e fundir com a tabela de metadados original. A engenharia de dados pode ser muito trabalhosa e específica para cada caso. NÃO CONFIAR NA VERSÃO FREE DO CHATGPT OU DE QUALQUER OUTRA IA PARA ESTE TRABALHO (comentado dia 16/11/2023). Em caso de necessidade, procure alguém com habilidades de engenharia de dados. 
 ```{r metadata_eng, eval=TRUE, echo=TRUE}
-# Carregando libs
-library(readxl)
-library(dplyr)
-library(tidyr)
-
 # Lendo o Excel
 curated_dataset <- read_excel("caminho ou nome do arquivo/curated_dataset.xlsx")
 
