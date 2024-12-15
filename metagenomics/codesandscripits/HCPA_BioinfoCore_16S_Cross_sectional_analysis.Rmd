@@ -1,0 +1,2257 @@
+---
+title: "Aqui vai o titulo (este workflow é para estudos transversais/cross-sectional)"
+author: "Otávio von Ameln Lovison"
+date: "`r Sys.Date()`"
+html_document:
+    df_print: paged
+    theme: cerulean
+    highlight: haddock
+    toc: yes
+    toc_depth: 3
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+    code_fold: show
+  word_document: 
+    toc: yes
+    toc_depth: '5'
+  pdf_document:
+    toc: yes
+    toc_depth: '5'
+---
+
+```{r setup, include = FALSE}
+path <- '/home/otavio/Projects/Peruzzo_et_al_2024/Analysis/' #diretorio de analise
+knitr::opts_chunk$set(
+  collapse = TRUE, 
+  echo=TRUE,
+  comment="#>", 
+  message=FALSE,
+  warning=FALSE,
+	fig.align="center",
+  fig.width=15,
+  fig.height=15,
+  dpi=150)
+knitr::opts_knit$set(root.dir = path)
+```
+
+# 0 - Prep
+Aqui vai uma breve descrição do projeto. Exemplo abaixo:
+
+Data for this analysis is from the project 'Proteomics and Metagenomics for Identification and Characterization of COVID-19 Biomarkers', ethics approval 4.355.906, Hospital de Clínicas de Porto Alegre (HCPA). The bioinformatics analyses were performed in the Bioinformatics Core of HCPA. This document presents the microbiome analysis workflow for this project.
+
+In this analysis we include 79 nasal and oropharynx swabs from HCPA biobank, collected to perform rt-qPCR for SARS-CoV-2 detection. The samples were selected using COVID-19 severity class (WHO, 2020), as follows: Group 1 (n = 22): positive rt-qPCR for SARS-CoV-2 - COVID-19 - moderate; Group 2 (n = 19, control group): negative rt-qPCR for SARS-CoV-2 (confirmed with a second test), previously classified as moderate COVID-19 by the physician; Group 3 (n = 20): positive rt-qPCR for SARS-CoV-2 - COVID-19 - severe/critical; Group 4 (n = 18, control group): asymptomatic, highly exposed inpatients and healthcare workers, who tested negative by rt-qPCR for SARS-CoV-2 screening. 
+
+## 0.1 Libraries
+```{r libraries, eval=TRUE, echo=FALSE}
+# clean environment
+rm(list = ls(all = TRUE))
+library(gtsummary)
+library(kableExtra)
+library(writexl)
+library(dplyr)
+library(phyloseq)
+library(nlme)
+library(vegan)
+library(compositions)
+library(ggplot2)
+library(lme4)
+library(reshape2) 
+library(vegan)
+library(ade4)
+library(plotly)
+library(pracma) 
+library(fpc) 
+library(tidyverse)
+library(purrr)
+library(cluster)
+library(RColorBrewer)
+library(ape)
+library(ZIDM)
+library(gplots)
+library(RColorBrewer)
+library(pheatmap)
+library(reticulate)
+library(gridExtra)
+library(broom)
+library(ANCOMBC)
+library(caret)
+library(DT)
+library(ggfortify)
+library(readr)
+library(ggpicrust2)
+library(tibble)
+library(ggprism)
+library(patchwork)
+```
+
+# 1.0 Descriptive data
+```{r desc_data, eval=T, echo=F}
+path <- '/home/otavio/Projects/Peruzzo_et_al_2024/Analysis/'
+overview = paste(path,"/overview/",sep = "")
+dir.create(overview)
+
+ps <- readRDS("ps.dna.rds")
+
+metadata <- microbiome::meta(ps)
+
+# Criar tabela sumarizada
+summary_table <- metadata %>%
+  select(Group, Catelicidine..ng.mL., VitaminD..ng.mL., Age..Years., Gender, Phototype..Fitzpatrick.skin.type., Time.of.disease..Years., Smoking, Flushing, Erythema, Pustules, Burning.sensation, Erythematotelangiectasias, Papulopustules, Ocular, Phyma, IGA) %>%
+  tbl_summary(
+    by = Group, # Comparação pré e pós tratamento
+    statistic = list(all_continuous() ~ "{mean} ({sd})", all_categorical() ~ "{n} / {N} ({p}%)"),
+    label = list(Catelicidine..ng.mL. ~ "Catelicidine (ng/mL)", VitaminD..ng.mL. ~ "Vitamin D (ng/mL)", Age..Years. ~ "Age (years)", Gender ~ "Gender", Phototype..Fitzpatrick.skin.type. ~ "Phototype (Fitzpatrick skin type)", Time.of.disease..Years. ~ "Time of disease (Years)", Smoking ~ "Smoking", Flushing ~ "Flushing", Erythema ~ "Erythema",  Pustules ~ "Pustules", Burning.sensation ~ "Burning sensation", Erythematotelangiectasias ~ "Erythematotelangiectasias", Papulopustules ~ "Papulopustules", Ocular ~ "Ocular", Phyma ~ "Phyma", IGA ~ "IGA"),
+    missing = "no"
+  ) %>%
+  add_p() %>% # Adicionar p-valor para teste estatístico entre os grupos
+  modify_header(label = "**Variable**") %>%
+  bold_labels()
+
+# Se quiser exportar para um arquivo Excel
+summary_table_df <- as_tibble(summary_table$table_body)
+FileName <- paste(overview,"/summary_statistics.xlsx", sep = "")
+write_xlsx(summary_table_df,FileName)
+
+# Exibir tabela no RMarkdown
+summary_table
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+
+## 1.1 Checking variables normality
+```{r normality, eval=T, echo=F}
+path <- '/home/otavio/Projects/Peruzzo_et_al_2024/Analysis/'
+overview = paste(path,"/overview/",sep = "")
+
+ps <- readRDS("ps.dna.rds")
+
+metadata <- microbiome::meta(ps)
+
+# Supondo que 'dados' seja o seu dataframe contendo as variáveis de interesse
+# Substitua 'dados' pelo nome do seu dataframe
+
+# Selecionar as variáveis contínuas que deseja avaliar
+variaveis_continuas <- c("Catelicidine..ng.mL.", "VitaminD..ng.mL.", "Age..Years.", "Time.of.disease..Years.") # Substitua pelos nomes das suas variáveis
+
+# Função para aplicar o teste de Shapiro-Wilk e gerar histogramas
+avaliar_normalidade <- function(df, variaveis) {
+  resultados_shapiro <- list()
+  graficos <- list()
+  
+  for (var in variaveis) {
+    # Remover NA's da variável
+    dados_var <- na.omit(df[[var]])
+    
+    # Aplicar o teste de Shapiro-Wilk
+    shapiro_result <- shapiro.test(dados_var)
+    resultados_shapiro[[var]] <- shapiro_result
+    
+    # Gerar histograma com curva de densidade
+    p <- ggplot(df, aes_string(x = var)) +
+      geom_histogram(aes(y = ..density..), binwidth = 1, fill = "lightblue", color = "black") +
+      geom_density(color = "red", size = 1) +
+      labs(title = paste("Histogram of", var),
+           subtitle = paste("p-value of Shapiro-Wilk test:", round(shapiro_result$p.value, 4)),
+           x = var, y = "Density") +
+      theme_minimal()
+    
+    graficos[[var]] <- p
+  }
+  
+  # Exibir resultados do teste de Shapiro-Wilk
+  for (var in variaveis) {
+    cat("Variable:", var, "\n")
+    print(resultados_shapiro[[var]])
+    cat("\n")
+  }
+  
+  # Exibir histogramas
+  do.call(grid.arrange, c(graficos, ncol = 2))
+}
+
+# Aplicar a função ao seu dataframe e variáveis selecionadas
+avaliar_normalidade(metadata, variaveis_continuas)
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+## 1.2 Checking for multicollinearity
+```{r multicollinearity, eval=T, echo=F}
+# Quando variáveis tiverem uma correlação módulo > 0.7, é interessante poderar a remoção de uma delas para as modelagens.
+path <- '/home/otavio/Projects/Peruzzo_et_al_2024/Analysis/'
+overview = paste(path,"/overview/",sep = "")
+dir.create(overview)
+
+ps <- readRDS("ps.dna.rds")
+
+metadata <- microbiome::meta(ps)
+
+# Carregar pacotes necessários
+library(dplyr)
+library(GGally)
+
+# Filtrar dados para o grupo Rosácea
+rosacea_data <- metadata %>%
+  filter(Group == "Rosacea")
+
+# Selecionar variáveis contínuas de interesse
+variaveis_continuas <- rosacea_data %>%
+  select(Catelicidine..ng.mL., VitaminD..ng.mL., Age..Years., Time.of.disease..Years.)
+
+# Calcular a matriz de correlação
+matriz_correlacao <- cor(variaveis_continuas, use = "complete.obs", method = "spearman")
+
+# Exibir a matriz de correlação
+print(matriz_correlacao)
+
+# Visualizar a matriz de correlação
+ggcorr(variaveis_continuas, method = c("pairwise", "spearman"), label = TRUE)
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+# 2.0 Data preparation
+```{r data_prep, eval=FALSE, echo=TRUE}
+#Escolha o objeto phyloseq de trabalho
+ps.dna <- readRDS("ps.dna.rds")
+ps.dna
+
+#Ranks disponíveis no dataset
+rank_names(ps.dna)
+
+#Número de features para cada filo
+table(tax_table(ps.dna)[, "Phylum"], exclude = NULL)
+
+#Filtrando features não identificadas em nível de filo. 
+#Dependendo o banco de dados/algoritmo é importante verificar como features 
+#não anotadas ficam descritas
+ps0.dna <- subset_taxa(ps.dna, !is.na(Phylum) 
+                       & !Phylum %in% c("", "uncharacterized", "NA"))
+ps0.dna
+saveRDS(ps0.dna, "ps0.dna.rds")
+
+#Aglomeração taxonômica
+ps0.dna.genus <- tax_glom(ps0.dna, "Genus", NArm = FALSE) #Gênero
+ps0.dna.genus
+ps0.dna.family <- tax_glom(ps0.dna, "Family", NArm = FALSE) #Family
+ps0.dna.family
+ps0.dna.phy <- tax_glom(ps0.dna, "Phylum", NArm = FALSE) #Phylo
+ps0.dna.phy
+
+# Computando a prevalência para cada feature
+prevdf = apply(X = otu_table(ps0.dna),
+               MARGIN = ifelse(taxa_are_rows(ps0.dna), yes = 1, no = 2),
+               FUN = function(x){sum(x > 0)})
+
+# Adicionando taxonomia e contagem total de reads
+prevdf = data.frame(Prevalence = prevdf,
+                    TotalAbundance = taxa_sums(ps0.dna),
+                    tax_table(ps0.dna))
+
+prevdf1 = subset(prevdf, Phylum %in% get_taxa_unique(ps0.dna, "Phylum"))
+
+# Define o ponto de corte de prevalência com relação ao total de amostras 
+prevalenceThreshold = 0.1 * nsamples(ps0.dna)
+prevalenceThreshold
+
+# Executa o filtro de prevalência
+keepTaxa = rownames(prevdf1)[(prevdf1$Prevalence >= prevalenceThreshold)]
+ps1.dna = prune_taxa(keepTaxa, ps0.dna)
+ps1.dna
+
+#Salvando os objetos
+saveRDS(ps1.dna, file = "ps1.dna.rds")
+
+#Filtrando o objeto aglomerado em nível de gênero
+# Computando a prevalência para cada feature
+prevdf = apply(X = otu_table(ps0.dna.genus),
+               MARGIN = ifelse(taxa_are_rows(ps0.dna.genus), yes = 1, no = 2),
+               FUN = function(x){sum(x > 0)})
+
+# Adicionando taxonomia e contagem total de reads
+prevdf = data.frame(Prevalence = prevdf,
+                    TotalAbundance = taxa_sums(ps0.dna.genus),
+                    tax_table(ps0.dna.genus))
+
+prevdf1 = subset(prevdf, Genus %in% get_taxa_unique(ps0.dna, "Genus"))
+
+# Executa o filtro de prevalência
+keepTaxa = rownames(prevdf1)[(prevdf1$Prevalence >= prevalenceThreshold)]
+ps1.dna.genus = prune_taxa(keepTaxa, ps0.dna.genus)
+ps1.dna.genus
+
+#Salvando os objetos
+saveRDS(ps1.dna.genus, file = "ps1.dna.genus.rds")
+
+#Filtrando o objeto aglomerado em nível de família
+# Computando a prevalência para cada feature
+prevdf = apply(X = otu_table(ps0.dna.family),
+               MARGIN = ifelse(taxa_are_rows(ps0.dna.family), yes = 1, no = 2),
+               FUN = function(x){sum(x > 0)})
+
+# Adicionando taxonomia e contagem total de reads
+prevdf = data.frame(Prevalence = prevdf,
+                    TotalAbundance = taxa_sums(ps0.dna.family),
+                    tax_table(ps0.dna.family))
+
+prevdf1 = subset(prevdf, Family %in% get_taxa_unique(ps0.dna, "Family"))
+
+# Executa o filtro de prevalência
+keepTaxa = rownames(prevdf1)[(prevdf1$Prevalence >= prevalenceThreshold)]
+ps1.dna.family = prune_taxa(keepTaxa, ps0.dna.family)
+ps1.dna.family
+
+#Salvando os objetos
+saveRDS(ps1.dna.family, file = "ps1.dna.family.rds")
+
+#Filtrando o objeto aglomerado em nível de filo
+# Computando a prevalência para cada feature
+prevdf = apply(X = otu_table(ps0.dna.phy),
+               MARGIN = ifelse(taxa_are_rows(ps0.dna.phy), yes = 1, no = 2),
+               FUN = function(x){sum(x > 0)})
+
+# Adicionando taxonomia e contagem total de reads
+prevdf = data.frame(Prevalence = prevdf,
+                    TotalAbundance = taxa_sums(ps0.dna.phy),
+                    tax_table(ps0.dna.phy))
+
+prevdf1 = subset(prevdf, Phylum %in% get_taxa_unique(ps0.dna, "Phylum"))
+
+# Executa o filtro de prevalência
+keepTaxa = rownames(prevdf1)[(prevdf1$Prevalence >= prevalenceThreshold)]
+ps1.dna.phy = prune_taxa(keepTaxa, ps0.dna.phy)
+ps1.dna.phy
+
+#Salvando os objetos
+saveRDS(ps1.dna.phy, file = "ps1.dna.phy.rds")
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+
+## 2.1 Checking outliers
+### 2.1.1 Outliers by relative abundance
+```{r outliers_barchart, eval=T, echo=F}
+# Definir o caminho para salvar as figuras
+path <- '/home/otavio/Projects/Peruzzo_et_al_2024/Analysis/'
+overview <- paste(path, "/overview/", sep = "")
+
+# Carregar os objetos phyloseq
+ps_ASV <- readRDS("ps1.dna.rds")
+ps_phylum <- readRDS("ps1.dna.phy.rds")
+ps_family <- readRDS("ps1.dna.family.rds")
+ps_genus <- readRDS("ps1.dna.genus.rds")
+
+ps_ASV_ra <- transform_sample_counts(ps_ASV, function(x) x / sum(x))
+ps_phylum_ra <- transform_sample_counts(ps_phylum, function(x) x / sum(x))
+ps_family_ra <- transform_sample_counts(ps_family, function(x) x / sum(x))
+ps_genus_ra <- transform_sample_counts(ps_genus, function(x) x / sum(x))
+
+# Função para criar e salvar barcharts
+create_barchart <- function(ps_obj, title, file_prefix) {
+  # Obter abundâncias absolutas ou relativas
+  abundance_df <- as.data.frame(otu_table(ps_obj))
+  abundance_df <- abundance_df %>%
+    rownames_to_column("SampleID") %>%
+    pivot_longer(-SampleID, names_to = "Taxa", values_to = "Abundance")
+  
+  # Criar o barchart
+  plot <- ggplot(abundance_df, aes(x = SampleID, y = Abundance, fill = Taxa)) +
+    geom_bar(stat = "identity", position = "stack") +
+    labs(x = "Sample", y = "Abundance", title = title) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+          plot.title = element_text(hjust = 0.5),
+          legend.position = "none")
+  
+  # Salvar a figura em PDF e PNG
+  FileName_PDF <- paste(overview, paste0(file_prefix, ".pdf"), sep = "")
+  FileName_PNG <- paste(overview, paste0(file_prefix, ".png"), sep = "")
+  ggsave(FileName_PDF, plot = plot, width = 180, height = 170, units = "mm", dpi = 300, limitsize = F)
+  ggsave(FileName_PNG, plot = plot, width = 180, height = 170, units = "mm", dpi = 300, limitsize = F)
+  
+  return(plot)
+}
+
+# Criar barcharts
+
+# 1. Abundâncias em nível de filo
+F1 <- create_barchart(ps_phylum_ra, 
+                      title = "Relative Abundances by Phylum", 
+                      file_prefix = "Relative_Abundance_Phylum")
+
+# 2. Abundâncias em nível de família
+F2 <- create_barchart(ps_family_ra, 
+                      title = "Relative Abundances by Family", 
+                      file_prefix = "Relative_Abundance_Family")
+
+# 3. Abundâncias em nível de gênero
+F3 <- create_barchart(ps_genus_ra, 
+                      title = "Relative Abundances by Genus", 
+                      file_prefix = "Relative_Abundance_Genus")
+
+# 4. Abundâncias em nível de ASV
+F4 <- create_barchart(ps_ASV_ra, 
+                      title = "Relative Abundances by ASV", 
+                      file_prefix = "Relative_Abundance_ASV")
+
+# Exibir as figuras (opcional)
+print(F1)
+print(F2)
+print(F3)
+print(F4)
+
+
+```
+
+### 2.1.2 Outliers by sample size and composition
+```{r outliers_barchart_size, eval=T, echo=F}
+# Definir o caminho para salvar as figuras
+path <- '/home/otavio/Projects/Peruzzo_et_al_2024/Analysis/'
+overview <- paste(path, "/overview/", sep = "")
+
+# Carregar os objetos phyloseq
+ps_phylum <- readRDS("ps1.dna.phy.rds")
+ps_family <- readRDS("ps1.dna.family.rds")
+ps_genus <- readRDS("ps1.dna.genus.rds")
+
+# Função para criar e salvar barcharts
+create_barchart <- function(ps_obj, title, file_prefix) {
+  # Obter abundâncias absolutas ou relativas
+  abundance_df <- as.data.frame(otu_table(ps_obj))
+  abundance_df <- abundance_df %>%
+    rownames_to_column("SampleID") %>%
+    pivot_longer(-SampleID, names_to = "Taxa", values_to = "Abundance")
+  
+  # Criar o barchart
+  plot <- ggplot(abundance_df, aes(x = SampleID, y = Abundance, fill = Taxa)) +
+    geom_bar(stat = "identity", position = "stack") +
+    labs(x = "Sample", y = "Abundance", title = title) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+          plot.title = element_text(hjust = 0.5),
+          legend.position = "none")
+  
+  # Salvar a figura em PDF e PNG
+  FileName_PDF <- paste(overview, paste0(file_prefix, ".pdf"), sep = "")
+  FileName_PNG <- paste(overview, paste0(file_prefix, ".png"), sep = "")
+  ggsave(FileName_PDF, plot = plot, width = 180, height = 170, units = "mm", dpi = 300)
+  ggsave(FileName_PNG, plot = plot, width = 180, height = 170, units = "mm", dpi = 300)
+  
+  return(plot)
+}
+
+# Criar barcharts
+
+# 1. Abundâncias em nível de filo
+F1 <- create_barchart(ps_phylum, 
+                      title = "Abundances by Phylum", 
+                      file_prefix = "Abundance_Phylum")
+
+# 2. Abundâncias em nível de família
+F2 <- create_barchart(ps_family, 
+                      title = "Abundances by Family", 
+                      file_prefix = "Abundance_Family")
+
+# 3. Abundâncias em nível de gênero
+F3 <- create_barchart(ps_genus, 
+                      title = "Abundances by Genus", 
+                      file_prefix = "Abundance_Genus")
+
+# Exibir as figuras (opcional)
+print(F1)
+print(F2)
+print(F3)
+```
+### 2.1.3 Multivariate outliers
+```{r outliers_PCA, eval=T, echo=F}
+# Definir o caminho para salvar as figuras
+path <- '/home/otavio/Projects/Peruzzo_et_al_2024/Analysis/'
+overview <- paste(path, "/overview/", sep = "")
+
+#importando o objeto phyloseq
+ps <- readRDS("ps1.dna.rds") #Para PCA
+
+#Definindo a paleta de cores para a variável principal
+palette <- c("magenta", "darkgreen")
+
+#Extraindo os dados do objeto phyloseq e a tabela de metadados
+seq_counts <- as.data.frame(t(otu_table(ps)))
+samdf <- microbiome::meta(ps)
+
+# Abordagem para ordenação por PCA com Dados Composicionais: Transformações de Razão Logarítmica
+# Razão logarítmica
+log_rats <- data.frame(compositions::ilr(t(seq_counts)))
+
+# E altere o comando para ser o mesmo.
+lograt_pca <- prcomp(log_rats)
+lograt_variances<-lograt_pca$sdev^2/sum(lograt_pca$sdev^2)
+
+#Construindo o df para o pca
+pca_lograt_frame<-data.frame(lograt_pca$x,
+                          Group=cbind(as.character(samdf$Group)))
+
+#Gerando o plot
+lrpca <- ggplot(pca_lograt_frame) +
+  geom_point(aes(x = PC1, y = PC2, col = Group)) +
+  ylab(paste0('PC2 ', round(lograt_variances[2] * 100, 2), '%')) +
+  xlab(paste0('PC1 ', round(lograt_variances[1] * 100, 2), '%')) +
+  scale_color_manual(values = palette, name = 'Group') +
+  ggtitle('Log-Ratio PCA Ordination - Group') +
+  coord_fixed(ratio = lograt_variances[2] / lograt_variances[1]) +
+  theme_bw()
+
+lrpca
+
+#Exportando a figura
+FileName <- paste(overview,"/outliers_lrpca.pdf", sep = "")
+ggsave(FileName, plot = lrpca, width = 180, height = 170, units = "mm", dpi = 300)
+
+FileName <- paste(overview,"/outliers_lrpca.png", sep = "")
+ggsave(FileName, plot = lrpca, width = 180, height = 170, units = "mm", dpi = 300)
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+
+### 2.1.4 Removing outliers
+C19 e C24 are clear outliers and will be removed.
+```{r outliers_drop, eval=F, echo=F}
+# Definir os nomes das amostras a serem removidas
+amostras_remover <- c("C19", "C24")
+
+# Lista dos arquivos originais
+arquivos_originais <- c("ps0.dna.rds",  "ps1.dna.rds", "ps1.dna.phy.rds", "ps1.dna.family.rds", "ps1.dna.genus.rds")
+
+# Função para remover amostras e salvar novo objeto
+remover_amostras_e_salvar <- function(arquivo) {
+  # Carregar o objeto phyloseq
+  ps_obj <- readRDS(arquivo)
+  
+  # Remover as amostras especificadas
+  ps_obj_no <- prune_samples(!(sample_names(ps_obj) %in% amostras_remover), ps_obj)
+  
+  # Definir o novo nome do arquivo
+  novo_nome <- sub(".rds$", ".no.rds", arquivo)
+  
+  # Salvar o novo objeto
+  saveRDS(ps_obj_no, file = novo_nome)
+  
+}
+
+# Aplicar a função a cada arquivo
+lapply(arquivos_originais, remover_amostras_e_salvar)
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+
+# 3.0 Microbiome overview
+## 3.1 Ajusting for calculations and tables
+```{r microbiome_overview, eval=T, echo=F}
+path <- '/home/otavio/Projects/Peruzzo_et_al_2024/Analysis/'
+overview = paste(path,"/overview/",sep = "")
+
+ps0.dna <- readRDS("ps1.dna.no.rds")
+
+#Aglomerações
+ps.dna.phy <- tax_glom(ps0.dna, "Phylum", NArm = TRUE)
+ps.dna.family <- tax_glom(ps0.dna, "Family", NArm = TRUE)
+ps.dna.genus <- tax_glom(ps0.dna, "Genus", NArm = TRUE)
+
+#ASV level
+ps.ra <- transform_sample_counts(ps0.dna, function(x) x/sum(x))
+
+#Phylum level
+taxa_names(ps.dna.phy) <- tax_table(ps.dna.phy)[,2]
+ps.phy.ra <- transform_sample_counts(ps.dna.phy, function(x) x/sum(x))
+
+#Family level
+taxa_names(ps.dna.family) <- tax_table(ps.dna.family)[,5]
+ps.family.ra <- transform_sample_counts(ps.dna.family, function(x) x/sum(x))
+
+#Genus level
+#taxa_names(ps.dna.genus) <- tax_table(ps.dna.genus)[,6]
+ps.genus.ra <- transform_sample_counts(ps.dna.genus, function(x) x/sum(x))
+genus.melt <- psmelt(ps.genus.ra)
+```
+
+### 3.1.1 Dominant taxa
+#### Tables
+The distribution of the reads are here summarized on phylum, family and genus level. 
+```{r ov_microbiome_tables, eval=T, echo=F}
+df2 <- data.frame(tax_table(ps.dna.phy), taxprc = 100*taxa_sums(ps.phy.ra)/length(sample_names(ps.phy.ra)))
+df3 <- data.frame(tax_table(ps.dna.family), taxprc = 100*taxa_sums(ps.family.ra)/length(sample_names(ps.family.ra)))
+df4 <- data.frame(tax_table(ps.dna.genus),taxprc = 100*taxa_sums(ps.genus.ra)/length(sample_names(ps.genus.ra)))
+df5 <- data.frame(tax_table(ps0.dna),taxprc = 100*taxa_sums(ps.ra)/length(sample_names(ps.ra)))
+
+df.count <- data.frame(Included = c("All", "> 0.01%", "> 0.1%","> 1%"),
+                          Phylum = c(nrow(df2),sum(df2$taxprc > 0.01),sum(df2$taxprc > 0.1),sum(df2$taxprc > 1)),
+                          Family = c(nrow(df3),sum(df3$taxprc > 0.01),sum(df3$taxprc > 0.1),sum(df3$taxprc > 1)),
+                          Genus = c(nrow(df4),sum(df4$taxprc > 0.01),sum(df4$taxprc > 0.1),sum(df4$taxprc > 1)),
+                          ASV = c(nrow(df5),sum(df5$taxprc > 0.01),sum(df5$taxprc > 0.1),sum(df5$taxprc > 1)))
+
+# Count of ASV and taxa in samples
+kable(df.count, row.names = F,digits = 1, caption = 'Abundance of phyla, family, genera and ASV in microbiome samples')%>% 
+  kable_classic(full_width = F, position = "left")
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(overview,"/Abundance of phyla, family, genera and ASV in microbiome samples.xlsx", sep = "")
+write_xlsx(df.count,FileName)
+
+# Top 6 dominating phyla (prc abundance)
+kable(head(df2[order(df2$taxprc,decreasing = T),c("Kingdom","Phylum","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to phylum',col.names = c("Kingdom","Phylum","Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(overview,"/Average abundance according to phylum.xlsx", sep = "")
+write_xlsx(df2,FileName)
+
+# Top 6 dominating family (prc abundance)
+kable(head(df3[order(df3$taxprc,decreasing = T),c("Kingdom","Phylum","Family", "taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to family',col.names = c("Kingdom","Phylum", "Family", "Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(overview,"/Average abundance according to family.xlsx", sep = "")
+write_xlsx(df3,FileName)
+
+# Top 6 dominating (genera prc abundance)
+kable(head(df4[order(df4$taxprc,decreasing = T),c("Kingdom","Phylum","Class","Order","Family","Genus","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to genus',col.names = c("Kingdom","Phylum","Class","Order","Family","Genus","Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(overview,"/Average abundance according to genus.xlsx", sep = "")
+write_xlsx(df4,FileName)
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+
+### 3.1.2 Distribution of taxa in Rosacea samples
+```{r rosacea_dist1, eval=T, echo=F}
+path <- '/home/otavio/Projects/Peruzzo_et_al_2024/Analysis/'
+overview_group = paste(path,"/overview_by_group/",sep = "")
+dir.create(overview_group)
+
+ps <- readRDS("ps1.dna.no.rds")
+ps.rosacea <- subset_samples(ps, Group=='Rosacea')
+
+#Aglomerações
+ps.rosacea.phy <- tax_glom(ps.rosacea, "Phylum", NArm = TRUE)
+ps.rosacea.family <- tax_glom(ps.rosacea, "Family", NArm = TRUE)
+ps.rosacea.genus <- tax_glom(ps.rosacea, "Genus", NArm = TRUE)
+
+#ASV level
+ps.rosacea.ra <- transform_sample_counts(ps.rosacea, function(x) x/sum(x))
+
+#Phylum level
+taxa_names(ps.rosacea.phy) <- tax_table(ps.rosacea.phy)[,2]
+ps.rosacea.phy.ra <- transform_sample_counts(ps.rosacea.phy, function(x) x/sum(x))
+
+#Family level
+taxa_names(ps.rosacea.family) <- tax_table(ps.rosacea.family)[,5]
+ps.rosacea.family.ra <- transform_sample_counts(ps.rosacea.family, function(x) x/sum(x))
+
+#Genus level
+#taxa_names(ps.dna.genus) <- tax_table(ps.dna.genus)[,6]
+ps.rosacea.genus.ra <- transform_sample_counts(ps.rosacea.genus, function(x) x/sum(x))
+ps.rosacea.genus.melt <- psmelt(ps.rosacea.genus.ra)
+
+library(kableExtra)
+
+df2 <- data.frame(tax_table(ps.rosacea.phy), taxprc = 100*taxa_sums(ps.rosacea.phy.ra)/length(sample_names(ps.rosacea.phy.ra)))
+df3 <- data.frame(tax_table(ps.rosacea.family), taxprc = 100*taxa_sums(ps.rosacea.family.ra)/length(sample_names(ps.rosacea.family.ra)))
+df4 <- data.frame(tax_table(ps.rosacea.genus),taxprc = 100*taxa_sums(ps.rosacea.genus.ra)/length(sample_names(ps.rosacea.genus.ra)))
+df5 <- data.frame(tax_table(ps.rosacea),taxprc = 100*taxa_sums(ps.rosacea.ra)/length(sample_names(ps.rosacea.ra)))
+
+df.count <- data.frame(Included = c("All", "> 0.01%", "> 0.1%","> 1%"),
+                          Phylum = c(nrow(df2),sum(df2$taxprc > 0.01),sum(df2$taxprc > 0.1),sum(df2$taxprc > 1)),
+                          Family = c(nrow(df3),sum(df3$taxprc > 0.01),sum(df3$taxprc > 0.1),sum(df3$taxprc > 1)),
+                          Genus = c(nrow(df4),sum(df4$taxprc > 0.01),sum(df4$taxprc > 0.1),sum(df4$taxprc > 1)),
+                          ASV = c(nrow(df5),sum(df5$taxprc > 0.01),sum(df5$taxprc > 0.1),sum(df5$taxprc > 1)))
+
+# Count of ASV and taxa in rosacea samples
+kable(df.count, row.names = F,digits = 1, caption = 'Abundance of phyla, family, genera and ASV in rosacea samples')%>% 
+  kable_classic(full_width = F, position = "left")
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(overview_group,"/Abundance of phyla, family, genera and ASV in rosacea samples.xlsx", sep = "")
+write_xlsx(df.count,FileName)
+
+# Top 6 dominating phyla (prc abundance)
+kable(head(df2[order(df2$taxprc,decreasing = T),c("Kingdom","Phylum","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to phylum in rosacea samples',col.names = c("Kingdom","Phylum","Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(overview_group,"/Average abundance according to phylum in rosacea samples.xlsx", sep = "")
+write_xlsx(df2,FileName)
+
+# Top 6 dominating family (prc abundance)
+kable(head(df3[order(df3$taxprc,decreasing = T),c("Kingdom","Phylum","Family", "taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to family in rosacea samples',col.names = c("Kingdom","Phylum", "Family", "Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(overview_group,"/Average abundance according to family in rosacea samples.xlsx", sep = "")
+write_xlsx(df3,FileName)
+
+# Top 6 dominating (genera prc abundance)
+kable(head(df4[order(df4$taxprc,decreasing = T),c("Kingdom","Phylum","Class","Order","Family","Genus","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to genus in rosacea samples',col.names = c("Kingdom","Phylum","Class","Order","Family","Genus","Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(overview_group,"/Average abundance according to genus in rosacea samples.xlsx", sep = "")
+write_xlsx(df4,FileName)
+
+# clean environment
+#rm(list = ls(all = TRUE))
+```
+
+### 3.1.3 Distribution of taxa in control samples
+```{r control_dist, eval=T, echo=F}
+ps.control <- subset_samples(ps, Group=='Control')
+
+#Aglomerações
+ps.control.phy <- tax_glom(ps.control, "Phylum", NArm = TRUE)
+ps.control.family <- tax_glom(ps.control, "Family", NArm = TRUE)
+ps.control.genus <- tax_glom(ps.control, "Genus", NArm = TRUE)
+
+#ASV level
+ps.control.ra <- transform_sample_counts(ps.control, function(x) x/sum(x))
+
+#Phylum level
+taxa_names(ps.control.phy) <- tax_table(ps.control.phy)[,2]
+ps.control.phy.ra <- transform_sample_counts(ps.control.phy, function(x) x/sum(x))
+
+#Family level
+taxa_names(ps.control.family) <- tax_table(ps.control.family)[,5]
+ps.control.family.ra <- transform_sample_counts(ps.control.family, function(x) x/sum(x))
+
+#Genus level
+#taxa_names(ps.dna.genus) <- tax_table(ps.dna.genus)[,6]
+ps.control.genus.ra <- transform_sample_counts(ps.control.genus, function(x) x/sum(x))
+ps.control.genus.melt <- psmelt(ps.control.genus.ra)
+
+library(kableExtra)
+
+df2 <- data.frame(tax_table(ps.control.phy), taxprc = 100*taxa_sums(ps.control.phy.ra)/length(sample_names(ps.control.phy.ra)))
+df3 <- data.frame(tax_table(ps.control.family), taxprc = 100*taxa_sums(ps.control.family.ra)/length(sample_names(ps.control.family.ra)))
+df4 <- data.frame(tax_table(ps.control.genus),taxprc = 100*taxa_sums(ps.control.genus.ra)/length(sample_names(ps.control.genus.ra)))
+df5 <- data.frame(tax_table(ps.control),taxprc = 100*taxa_sums(ps.control.ra)/length(sample_names(ps.control.ra)))
+
+df.count <- data.frame(Included = c("All", "> 0.01%", "> 0.1%","> 1%"),
+                          Phylum = c(nrow(df2),sum(df2$taxprc > 0.01),sum(df2$taxprc > 0.1),sum(df2$taxprc > 1)),
+                          Family = c(nrow(df3),sum(df3$taxprc > 0.01),sum(df3$taxprc > 0.1),sum(df3$taxprc > 1)),
+                          Genus = c(nrow(df4),sum(df4$taxprc > 0.01),sum(df4$taxprc > 0.1),sum(df4$taxprc > 1)),
+                          ASV = c(nrow(df5),sum(df5$taxprc > 0.01),sum(df5$taxprc > 0.1),sum(df5$taxprc > 1)))
+
+# Count of ASV and taxa in control samples
+kable(df.count, row.names = F,digits = 1, caption = 'Abundance of phyla, family, genera and ASV in control samples')%>% 
+  kable_classic(full_width = F, position = "left")
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(overview_group,"/Abundance of phyla, family, genera and ASV in control samples.xlsx", sep = "")
+write_xlsx(df.count,FileName)
+
+# Top 6 dominating phyla (prc abundance)
+kable(head(df2[order(df2$taxprc,decreasing = T),c("Kingdom","Phylum","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to phylum in control samples',col.names = c("Kingdom","Phylum","Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(overview_group,"/Average abundance according to phylum in control samples.xlsx", sep = "")
+write_xlsx(df2,FileName)
+
+# Top 6 dominating family (prc abundance)
+kable(head(df3[order(df3$taxprc,decreasing = T),c("Kingdom","Phylum","Family", "taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to family in control samples',col.names = c("Kingdom","Phylum", "Family", "Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(overview_group,"/Average abundance according to family in control samples.xlsx", sep = "")
+write_xlsx(df3,FileName)
+
+# Top 6 dominating (genera prc abundance)
+kable(head(df4[order(df4$taxprc,decreasing = T),c("Kingdom","Phylum","Class","Order","Family","Genus","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to genus in control samples',col.names = c("Kingdom","Phylum","Class","Order","Family","Genus","Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(overview_group,"/Average abundance according to genus in control samples.xlsx", sep = "")
+write_xlsx(df4,FileName)
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+
+### 3.1.4 Rosacea x Control composition - Phylum level
+```{r rosacea_control_comp_Phylum, eval=T, echo=F}
+path <- '/home/otavio/Projects/Peruzzo_et_al_2024/Analysis/'
+overview_group = paste(path,"/overview_by_group/",sep = "")
+
+#Importando o objeto phyloseq aglomerado em filo
+ps <- readRDS("ps1.dna.phy.no.rds")
+
+# Transformar abundâncias absolutas em abundâncias relativas
+ps_ra <- transform_sample_counts(ps, function(x) x / sum(x))
+ps_ra_melt <- psmelt(ps_ra)
+
+#Definindo a paleta de cores para a variável principal
+palette <- c("magenta", "darkgreen")
+
+#Legend
+g_legend<-function(a.gplot){ 
+  tmp <- ggplot_gtable(ggplot_build(a.gplot)) 
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box") 
+  legend <- tmp$grobs[[leg]] 
+  return(legend)} 
+mytheme <- theme(axis.title = element_text(size = 10), axis.text = element_text(size = 8)) + theme_bw()
+
+# Subset
+Phylum.summary <- aggregate(Abundance~Group+Phylum, data = ps_ra_melt, FUN = mean)
+Phylum.summary.ordered <- Phylum.summary[order(Phylum.summary$Abundance,decreasing = T),]
+
+# Encontrando top10 por group
+Phylum.top.1 <- Phylum.summary.ordered$Phylum[Phylum.summary.ordered$Group == "Rosacea"][1:10]
+Phylum.top.2 <- Phylum.summary.ordered$Phylum[Phylum.summary.ordered$Group == "Control"][1:10]
+
+# subset 
+top10 <- unique(c(Phylum.top.1,Phylum.top.2))#,Phylum.top.3))
+top10.max <- aggregate(Abundance~Phylum, data = Phylum.summary.ordered[Phylum.summary.ordered$Phylum %in% top10,], max)
+
+Phylum.keep <- top10.max$Phylum[top10.max$Abundance>0.01]
+
+# fig (Boxplot top Phylum por group)
+ps_ra_melt$Abundance_percent <- ifelse(ps_ra_melt$Abundance < 0.001, 0.1,ps_ra_melt$Abundance*100)
+
+F1 <- ggplot(ps_ra_melt[ps_ra_melt$Phylum %in% Phylum.keep,], aes(y = Phylum, x = Abundance_percent)) + 
+  geom_boxplot(position =position_dodge2(reverse = TRUE), aes(color = Group), alpha = 0.5) + 
+  geom_boxplot(position =position_dodge2(reverse = TRUE), aes(fill = Group), alpha = 0.5, outlier.shape = 21) +
+  #facet_wrap(~ Exam, nrow = 1) +
+  scale_fill_manual(values = palette) + 
+  scale_color_manual(values = palette) + 
+  scale_x_log10() +
+  ylab("") +
+  xlab("Abundance (%)") +
+  theme_bw() + theme(axis.title = element_text(size = 10), axis.text.x = element_text(size = 8),legend.position = 'bottom',axis.text.y = element_text(face="italic",size = 8),
+  plot.margin = unit(c(1, 1, 1, 1), "lines")) # Ajuste as margens aqui (topo, direita, baixo, esquerda)
+
+print(F1)
+
+# plot legend
+F1_legend <- g_legend(F1 + geom_boxplot(aes(color=Group,fill=Group),alpha=0.5)+ 
+  theme_bw() + theme(axis.title = element_text(size = 10), 
+                     axis.text = element_text(size = 8), 
+                     axis.text.x=element_blank(), 
+                     axis.ticks.x=element_blank(), 
+                     legend.position = 'bottom'))
+
+#Salvando
+FileName <- paste(overview_group,"/Top Phylum Abundance by Group.pdf", sep = "")
+ggsave(FileName, plot = F1, width = 180, height = 170, units = "mm", dpi = 300)
+
+#Salvando
+FileName <- paste(overview_group,"/Top Phylum Abundance by Group.png", sep = "")
+ggsave(FileName, plot = F1, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(overview_group,"/Top Phylum Abundance by Group.xlsx", sep = "")
+write_xlsx(ps_ra_melt, FileName)
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+
+### 3.1.5 rosacea x control composition - Family level
+```{r rosacea_control_comp_family, eval=T, echo=F}
+path <- '/home/otavio/Projects/Peruzzo_et_al_2024/Analysis/'
+overview_group = paste(path,"/overview_by_group/",sep = "")
+
+#Importando o objeto phyloseq aglomerado em família
+ps <- readRDS("ps1.dna.family.no.rds")
+
+# Transformar abundâncias absolutas em abundâncias relativas
+ps_ra <- transform_sample_counts(ps, function(x) x / sum(x))
+ps_ra_melt <- psmelt(ps_ra)
+
+#Definindo a paleta de cores para a variável principal
+palette <- c("magenta", "darkgreen")
+
+#Legend
+g_legend<-function(a.gplot){ 
+  tmp <- ggplot_gtable(ggplot_build(a.gplot)) 
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box") 
+  legend <- tmp$grobs[[leg]] 
+  return(legend)} 
+mytheme <- theme(axis.title = element_text(size = 10), axis.text = element_text(size = 8)) + theme_bw()
+
+# Subset
+family.summary <- aggregate(Abundance~Group+Family, data = ps_ra_melt, FUN = mean)
+family.summary.ordered <- family.summary[order(family.summary$Abundance,decreasing = T),]
+
+# Encontrando top10 por Exam
+family.top.1 <- family.summary.ordered$Family[family.summary.ordered$Group == "Rosacea"][1:10]
+family.top.2 <- family.summary.ordered$Family[family.summary.ordered$Group == "Control"][1:10]
+
+# subset 
+top10 <- unique(c(family.top.1,family.top.2))
+top10.max <- aggregate(Abundance~Family, data = family.summary.ordered[family.summary.ordered$Family %in% top10,], max)
+
+family.keep <- top10.max$Family[top10.max$Abundance>0.01]
+
+# fig 3a (Boxplot top family por Group)
+ps_ra_melt$Abundance_percent <- ifelse(ps_ra_melt$Abundance < 0.001, 0.1,ps_ra_melt$Abundance*100)
+
+F2 <- ggplot(ps_ra_melt[ps_ra_melt$Family %in% family.keep,], aes(y = Family, x = Abundance_percent)) + 
+  geom_boxplot(position =position_dodge2(reverse = TRUE), aes(color = Group), alpha = 0.5) + 
+  geom_boxplot(position =position_dodge2(reverse = TRUE), aes(fill = Group), alpha = 0.5, outlier.shape = 21) +
+  #facet_wrap(~ Exam, nrow = 1) +
+  scale_fill_manual(values = palette) + 
+  scale_color_manual(values = palette) + 
+  scale_x_log10() +
+  ylab("") +
+  xlab("Abundance (%)") +
+  theme_bw() + theme(axis.title = element_text(size = 10), axis.text.x = element_text(size = 8),legend.position = 'bottom',axis.text.y = element_text(face="italic",size = 8),
+  plot.margin = unit(c(1, 1, 1, 1), "lines")) # Ajuste as margens aqui (topo, direita, baixo, esquerda)
+
+print(F2)
+
+# plot legend
+F2_legend <- g_legend(F2 + geom_boxplot(aes(color=Group,fill=Group),alpha=0.5)+ 
+  theme_bw() + theme(axis.title = element_text(size = 10), 
+                     axis.text = element_text(size = 8), 
+                     axis.text.x=element_blank(), 
+                     axis.ticks.x=element_blank(), 
+                     legend.position = 'bottom'))
+
+#Salvando
+FileName <- paste(overview_group,"/Top family Abundance by Group.pdf", sep = "")
+ggsave(FileName, plot = F2, width = 180, height = 170, units = "mm", dpi = 300)
+
+#Salvando
+FileName <- paste(overview_group,"/Top family Abundance by Group.png", sep = "")
+ggsave(FileName, plot = F2, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(overview_group,"/Top family Abundance by Group.xlsx", sep = "")
+write_xlsx(ps_ra_melt, FileName)
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+
+### 3.1.6 Rosacea x Control composition - Genus level
+```{r rosacea_control_comp_genus, eval=T, echo=F}
+path <- '/home/otavio/Projects/Peruzzo_et_al_2024/Analysis/'
+overview_group = paste(path,"/overview_by_group/",sep = "")
+
+#Importando o objeto phyloseq aglomerado em gênero
+ps <- readRDS("ps1.dna.genus.no.rds")
+
+# Transformar abundâncias absolutas em abundâncias relativas
+ps_ra <- transform_sample_counts(ps, function(x) x / sum(x))
+ps_ra_melt <- psmelt(ps_ra)
+
+#Definindo a paleta de cores para a variável principal
+palette <- c("magenta", "darkgreen")
+
+#Legend
+g_legend<-function(a.gplot){ 
+  tmp <- ggplot_gtable(ggplot_build(a.gplot)) 
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box") 
+  legend <- tmp$grobs[[leg]] 
+  return(legend)} 
+mytheme <- theme(axis.title = element_text(size = 10), axis.text = element_text(size = 8)) + theme_bw()
+
+# subset relevant taxa
+genus.summary <- aggregate(Abundance~Group+Genus, data = ps_ra_melt, FUN = mean)
+genus.summary.ordered <- genus.summary[order(genus.summary$Abundance,decreasing = T),]
+
+# find top 10 per time point
+genus.top.1 <- genus.summary.ordered$Genus[genus.summary.ordered$Group == "Rosacea"][1:10]
+genus.top.2 <- genus.summary.ordered$Genus[genus.summary.ordered$Group == "Control"][1:10]
+
+# subset the ones with mead abundance above 
+top10 <- unique(c(genus.top.1,genus.top.2))
+top10.max <- aggregate(Abundance~Genus, data = genus.summary.ordered[genus.summary.ordered$Genus %in% top10,], max)
+genus.keep <- top10.max$Genus[top10.max$Abundance>0.01]
+
+# fig 2 a (boxplot top genera by group)
+ps_ra_melt$Abundance_percent <- ifelse(ps_ra_melt$Abundance < 0.001, 0.1,ps_ra_melt$Abundance*100)
+
+F3 <- ggplot(ps_ra_melt[ps_ra_melt$Genus %in% genus.keep,], aes(y = Genus, x = Abundance_percent)) + 
+  geom_boxplot(position =position_dodge2(reverse = TRUE), aes(color = Group), alpha = 0.5) + 
+  geom_boxplot(position =position_dodge2(reverse = TRUE), aes(fill = Group), alpha = 0.5, outlier.shape = 21) +
+  #facet_wrap(~ Exam, nrow = 1) +
+  scale_fill_manual(values = palette) + 
+  scale_color_manual(values = palette) + 
+  scale_x_log10() +
+  ylab("") +
+  xlab("Abundance (%)") +
+  theme_bw() + theme(axis.title = element_text(size = 10), axis.text.x = element_text(size = 8),legend.position = 'bottom',axis.text.y = element_text(face="italic",size = 8),
+  plot.margin = unit(c(1, 1, 1, 1), "lines")) # Ajuste as margens aqui (topo, direita, baixo, esquerda)
+
+print(F3)
+
+# plot legend
+F3_legend <- g_legend(F3 + geom_boxplot(aes(color=Group,fill=Group),alpha=0.5)+ 
+  theme_bw() + theme(axis.title = element_text(size = 10), 
+                     axis.text = element_text(size = 8), 
+                     axis.text.x=element_blank(), 
+                     axis.ticks.x=element_blank(), 
+                     legend.position = 'bottom'))
+
+#Salvando
+FileName <- paste(overview_group,"/Top Genera Abundance by Group.pdf", sep = "")
+ggsave(FileName, plot = F3, width = 180, height = 170, units = "mm", dpi = 300)
+
+#Salvando
+FileName <- paste(overview_group,"/Top Genera Abundance by Group.png", sep = "")
+ggsave(FileName, plot = F3, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(overview_group,"/Top Genera Abundance by Group.xlsx", sep = "")
+write_xlsx(ps_ra_melt, FileName)
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+
+# 4.0 Alpha diversity
+```{r alpha_a,eval=TRUE, echo=F, fig.cap='Figure : Boxplot of alpha diversity - Shannon diversity index by Group'}
+path <- '/home/otavio/Projects/Peruzzo_et_al_2024/Analysis/'
+alpha_div = paste(path,"/alpha_div/",sep = "")
+dir.create(alpha_div)
+
+ps <- readRDS("ps0.dna.no.rds")
+
+#Definindo a paleta de cores para a variável principal
+palette <- c("magenta", "darkgreen")
+
+#Legend
+g_legend<-function(a.gplot){ 
+  tmp <- ggplot_gtable(ggplot_build(a.gplot)) 
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box") 
+  legend <- tmp$grobs[[leg]] 
+  return(legend)} 
+
+mytheme <- theme(axis.title = element_text(size = 10), axis.text = element_text(size = 8)) + theme_bw()
+
+# Alpha diversidade 
+df.adiv <- cbind(data.frame(sample_data(ps)), estimate_richness(ps, measures = "Shannon"))
+
+# Sumarizando por grupo
+df.adiv.summary <- df.adiv %>%
+  group_by(Group) %>%
+  summarise(n = n(), Shannon_mean = mean(Shannon), Shannon_sd = sd(Shannon))
+
+# Tabela
+kable(df.adiv.summary[,1:4], row.names = F,digits = 3, caption = 'Summary of alpha diversity by group',col.names = c("Group", "Samples (n)", "Mean","SD")) %>%
+  kable_classic(full_width = F, position = "left")%>%
+  add_header_above(c("", "", "Shannon Diversity index" = 2))
+
+# Plot
+
+# Fig Alpha Div (Shannon)
+F4 <- ggplot(df.adiv, aes(x = Group, y= Shannon, alpha = 0.5)) + 
+  geom_boxplot(aes(color = Group)) + 
+  geom_boxplot(aes(fill = Group), outlier.shape = 21) + 
+  scale_fill_manual(values = palette) + 
+  scale_color_manual(values = palette) +
+  #facet_wrap(~ Exam, nrow = 1) +
+  ylab("Shannon diversity index") + xlab("Group") + 
+  theme_bw() + theme(axis.title = element_text(size = 10), 
+                     axis.text = element_text(size = 8), 
+                     axis.text.x=element_blank(), 
+                     axis.ticks.x=element_blank())#, 
+                     #legend.position = 'none')
+
+#Salvando
+FileName <- paste(alpha_div,"/Boxplot of alpha diversity - Shannon diversity index by group.pdf", sep = "")
+ggsave(FileName, plot = F4, width = 180, height = 170, units = "mm", dpi = 300)
+
+#Salvando
+FileName <- paste(alpha_div,"/Boxplot of alpha diversity - Shannon diversity index by group.png", sep = "")
+ggsave(FileName, plot = F4, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(alpha_div,"/Boxplot of alpha diversity - Shannon diversity index by group.xlsx", sep = "")
+write_xlsx(df.adiv, FileName)
+
+print(F4)
+```
+
+## 4.1 Linear modeling for alpha diversity
+```{r alpha_b,eval=TRUE, echo=F}
+set.seed(123)
+
+#Ajustando variáveis categóricas como fator
+df.adiv$Group <- as.factor(df.adiv$Group)
+df.adiv$Phototype..Fitzpatrick.skin.type. <- as.factor(df.adiv$Phototype..Fitzpatrick.skin.type.)
+
+# Ajustar o modelo linear
+modelo <- lm(Shannon ~ Group + Catelicidine..ng.mL. + VitaminD..ng.mL. + Age..Years. + Phototype..Fitzpatrick.skin.type.,
+             data = df.adiv)
+
+# Resumo do modelo (Tabela de coeficientes)
+modelo_summary <- tidy(modelo, conf.int = TRUE) %>% 
+  mutate(p.value = ifelse(p.value < 0.001, "<0.001", round(p.value, 3)))
+
+# Exibir tabela no RMarkdown
+modelo_summary %>%
+  kable(digits = 3, caption = "Linear Model Summary") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+
+# Diagnóstico do modelo - Gráficos de Resíduos
+# Configurar os gráficos de diagnóstico
+diagnostico <- autoplot(modelo, which = 1:4, colour = "blue") + 
+  theme_minimal()
+
+# Teste de normalidade dos resíduos
+teste_normalidade <- shapiro.test(residuals(modelo))
+
+# Exibir resultado do teste de Shapiro-Wilk
+cat("Shapiro-Wilk for Residuals Normality: \n")
+cat(paste("W =", round(teste_normalidade$statistic, 3), 
+          ", p-value =", teste_normalidade$p.value, "\n\n"))
+
+# Intervalo de Confiança dos Coeficientes
+intervalos <- confint(modelo) %>%
+  as.data.frame() %>%
+  rename(`Lower bound` = `2.5 %`, `Upper bound` = `97.5 %`) %>%
+  rownames_to_column("Variable")
+
+# Exibir intervalo de confiança como tabela
+intervalos %>%
+  kable(digits = 3, caption = "Confidence Intervals for Coefficients") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+
+# Criar uma lista com as tabelas para exportar
+output_list <- list(
+  "Linear Model Summary" = modelo_summary,
+  "Confidence Intervals" = intervalos
+)
+
+# Definir o nome do arquivo
+FileName <- paste0(alpha_div, "/Linear Model Summary and Confidence Intervals.xlsx")
+
+# Exportar para Excel
+write_xlsx(output_list, FileName)
+
+#clean environment
+rm(list = ls(all = TRUE))
+```
+
+# 5.0 Beta diversity and Clustering
+## 5.1 Preparing and evaluating the data
+```{r tsc_data_prep, eval=T, echo=F}
+# Definir os caminhos para o projeto e análise
+path <- '/home/otavio/Projects/Peruzzo_et_al_2024/Analysis/'
+Clustering <- file.path(path, "Clustering")
+dir.create(Clustering, showWarnings = FALSE)
+
+# Importar o objeto phyloseq
+ps <- readRDS("ps1.dna.genus.no.rds")
+
+# Extrair os dados do objeto phyloseq
+seq_counts <- as.data.frame(t(otu_table(ps)))
+tax_key <- as.data.frame(tax_table(ps))
+
+# Verificar se os dados são composicionais (simplex)
+# Estimando a matriz de covariância para as ASVs
+covariance_matrix <- as.matrix(seq_counts) %*% t(seq_counts)
+
+# Avaliar o determinante da matriz de covariância
+cov_determinant <- det(covariance_matrix)
+
+# Exibir o determinante no output do Markdown
+cat("Determinant of covariance matrix (original count data):", cov_determinant, "\n")
+
+# Interpretação:
+# O determinante é zero, o que indica que os dados estão em um simplex.
+# Isso significa que há uma redundância dimensional e que uma transformação é necessária
+# para tornar os dados adequados para PCA.
+
+# Abordagem: Transformações de Razão Logarítmica para PCA com Dados Composicionais
+# Aplicar a transformação isométrica de razão logarítmica (ILR)
+log_rats <- data.frame(compositions::ilr(t(seq_counts)))
+
+# Avaliar o determinante da matriz de covariância transformada
+new_covdet <- det(as.matrix(log_rats) %*% t(log_rats))
+
+# Exibir o determinante após a transformação no output do Markdown
+cat("Determinant of covariance matrix (after ILR transformation):", new_covdet, "\n")
+
+# Comparação:
+# - Dados de contagem originais: Determinante = 0 (matriz singular).
+# - Após a transformação ILR: Determinante > 0 (matriz invertível).
+
+# Realizar a PCA nos dados transformados por razão logarítmica
+lograt_pca <- prcomp(log_rats)
+```
+
+## 5.2 Log-Ratio PCA Screeplot
+```{r lrpca_scree, eval=T, echo=F}
+# Conferindo
+lograt_variances<-lograt_pca$sdev^2/sum(lograt_pca$sdev^2)
+barplot(lograt_variances,
+        main='Log-Ratio PCA Screeplot',
+        xlab='PC Axis',
+        ylab='% Variance',
+       col=c(rep('black',3),rep('grey',40)), # Definir em preto quais eixos explicam a maior proporção da variância
+       cex.names=1.5,cex.axis=1.5,cex.lab=1.5,cex.main=1.5)
+legend('topright',fill=c('black','grey'),c('Should Present','??? Judgment Call'))
+#A partir dos eixos que explicam a maior proporção a variância, definimos o número de eixos para os próximos plots. Espera-se que os 3 primeiros eixos expliquem entre 70-90% da variância, caso contrário o PCA perde um pouco o sentido.
+```
+
+## 5.3 Log-ratio PCA
+```{r lrpca_group1, eval=T, echo=F}
+#Extraindo metadados
+samdf <- microbiome::meta(ps)
+
+#Construindo o df para o pca
+pca_lograt_frame<-data.frame(lograt_pca$x,
+                          Group=cbind(as.character(samdf$Group)))
+                          
+
+#Definindo a paleta de cores para a variável principal
+palette <- c("magenta", "darkgreen")
+
+#Gerando o plot
+lrpca <- ggplot(pca_lograt_frame) +
+  geom_point(aes(x = PC1, y = PC2, col = Group)) +
+  ylab(paste0('PC2 ', round(lograt_variances[2] * 100, 2), '%')) +
+  xlab(paste0('PC1 ', round(lograt_variances[1] * 100, 2), '%')) +
+  scale_color_manual(values = palette, name = 'Group') +
+  ggtitle('Log-Ratio PCA Ordination - Group') +
+  coord_fixed(ratio = lograt_variances[2] / lograt_variances[1]) +
+  theme_bw()
+
+#Salvando
+FileName <- paste(Clustering,"/Log-Ratio PCA Ordination.pdf", sep = "")
+ggsave(FileName, plot = lrpca, width = 180, height = 170, units = "mm", dpi = 300)
+
+#Salvando
+FileName <- paste(Clustering,"/Log-Ratio PCA Ordination.png", sep = "")
+ggsave(FileName, plot = lrpca, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Se quiser exportar para um arquivo Excel
+pca_lograt_frame <- cbind(SampleID = samdf$SampleID, pca_lograt_frame)
+FileName <- paste(Clustering,"/Log-ratio PCA.xlsx", sep = "")
+write_xlsx(pca_lograt_frame,FileName)
+
+# Plot
+lrpca
+```
+
+## 5.4 PCoA on Jaccard Distance - Scree plot
+```{r pcoa_jac_scree, eval=T, echo=F}
+# Então, vamos começar olhando para a PCoA. A PCoA faz uma PCA em uma matriz de distância construída a partir dos dados.
+# Em seguida, precisamos de uma matriz de distância.
+# Diferentes métricas de distância enfatizam atributos/fatores distintos na comparação de comunidades microbianas.
+# Por exemplo, se quisermos priorizar diferenças na presença/ausência entre amostras, utilizamos Jaccard.
+# ATENÇÃO: a maioria das métricas de distância (Bray-Curtis por exemplo) não leva em consideração a composicionalidade do dado e deve ser evitada.
+
+# Computando distâncias
+jac_dmat<-vegdist(t(seq_counts),method="jaccard")
+
+# Fazendo pcoa
+pcoa_jac<-ape::pcoa(jac_dmat)
+
+# Agora precisamos inspecionar o resultado da PCoA. Analisamos um Screeplot para isso.
+# O Screeplot mostra a quantidade de variância explicada por cada eixo.
+samp_no<-dim(seq_counts)[2]
+jac_variances<-pcoa_jac$values$Relative_eig
+par(mar=c(5,6,4,1)+.1)
+barplot(jac_variances,
+        xlab='Principal Coordinate Axis',
+        ylab='% Variance',
+       col=c(rep('black',3),'darkgrey',rep('lightgrey',37)),
+       cex.names=2,cex.axis=2,cex.lab=2,cex.main=1,
+       names.arg=as.character(1:37)) #número de axis
+legend('topright',fill=c('black','darkgrey','lightgrey'),c('Should Present','Judgment Call','Unnecessary to Present'),cex=2)
+
+#Como interpretar este gráfico: Antes de plotarmos a ordenação real, precisamos decidir quais eixos apresentar.
+#Precisamos selecionar o menor número de eixos possível (para facilitar a visualização) que capture grandes quantidades de variância.
+```
+
+## 5.5 PCoA on Aitchison Distance - Scree plot
+```{r pcoa_euc_scree, eval=T, echo=F}
+# Realizar a transformação de razão logarítmica faz com que os dados ocupem uma faixa dinâmica similar, permitindo que possamos usar distâncias sensíveis à magnitude, como a distância euclidiana.
+euc_dmat<-dist(log_rats)
+
+# Ordenação com a matriz de distância
+pcoa_euc<-ape::pcoa(euc_dmat)
+euc_variances<-pcoa_euc$values$Relative_eig
+par(mar=c(5,6,4,1)+.1)
+barplot(euc_variances,
+        xlab='Principal Coordinate Axis',
+        ylab='% Variance',
+       col=c(rep('black',3),rep('darkgrey',2),rep('lightgrey',37)),
+       cex.names=2,cex.axis=2,cex.lab=2,cex.main=1,
+       names.arg=as.character(1:37)) #número de axis
+legend('topright',fill=c('black','darkgrey','lightgrey'),c('Should Present','Judgment Call','Unnecessary'),cex=2)
+```
+##  5.6 PCoA - Jaccard
+```{r pcoa_jac, eval=T, echo=F}
+#Quão diferentes são minhas amostras em relação à diversidade? Presença/Ausência (P/A) é recomendada quando se faz perguntas sobre a comunidade INTEIRA. Para enfatizar as mudanças na presença/ausência, optamos por usar a distância de Jaccard para a ordenação. Nota: Se sua ordenação tiver dados que se alinham em um formato de 'T' ou '+' perpendicular aos eixos, isso geralmente é um indicativo de covariância atribuída às dimensões superiores que não foram plotadas.
+
+pcoa_jac_frame<-data.frame(pcoa_jac$vectors, Group=cbind(as.character(samdf$Group)))
+eigenvalues<-round(jac_variances,4)*100
+
+pcoa_jac_fig <- plot_ly(pcoa_jac_frame, 
+                             type = 'scatter3d', 
+                             mode = 'markers',
+                             x = ~Axis.2, 
+                             y = ~Axis.3, 
+                             z = ~Axis.1, 
+                             color = ~Group,         # Cores baseadas no group
+                             colors = palette,             # Usando a paleta personalizada
+                             marker = list(size = 6)) %>%  # Define o tamanho dos marcadores
+  layout(font = list(size = 18),
+         scene = list(xaxis = list(title = paste0('Co 2 ', eigenvalues[2], '%'),
+                                   showticklabels = FALSE, zerolinecolor = 'black'),
+                      yaxis = list(title = paste0('Co 3 ', eigenvalues[3], '%'),
+                                   showticklabels = FALSE, zerolinecolor = 'black'),
+                      zaxis = list(title = paste0('Co 1 ', eigenvalues[1], '%'),
+                                   showticklabels = FALSE, zerolinecolor = 'black'),
+                      aspectratio = list(x = 3 * eigenvalues[2] / eigenvalues[1], 
+                                         y = 3 * eigenvalues[3] / eigenvalues[1], 
+                                         z = 3)))
+
+
+# Defina o tamanho desejado em mm e o DPI
+width_mm <- 180
+height_mm <- 170
+dpi <- 300
+
+# Converta para pixels
+width_px <- (width_mm / 25.4) * dpi
+height_px <- (height_mm / 25.4) * dpi
+
+# Salve a imagem usando o kaleido
+FileName <- paste(Clustering, "/PCoA Jaccard.pdf", sep = "")
+plotly::save_image(pcoa_jac_fig, FileName, width = width_px, height = height_px, scale = 1)
+
+FileName <- paste(Clustering, "/PCoA Jaccard.png", sep = "")
+plotly::save_image(pcoa_jac_fig, FileName, width = width_px, height = height_px, scale = 1)
+
+# Se quiser exportar para um arquivo Excel
+pcoa_jac_frame <- cbind(SampleID = samdf$SampleID, pcoa_jac_frame)
+FileName <- paste(Clustering,"/PCoA Jaccard.xlsx", sep = "")
+write_xlsx(pcoa_jac_frame,FileName)
+
+# Plot
+pcoa_jac_fig
+```
+
+## 5.7 PCoA - Aitchison
+```{r pcoa_eu_ex, eval=T, echo=F}
+pcoa_euc_frame<-data.frame(pcoa_euc$vectors, Group=cbind(as.character(samdf$Group)))
+euc_eigenvalues<-round(euc_variances,4)*100
+pcoa_euc_fig <- plot_ly(pcoa_euc_frame,type='scatter3d',mode='markers',
+          x=~Axis.3,
+          y=~Axis.2,
+          z=~Axis.1,
+          colors=palette,
+          color=~Group, 
+          marker = list(size = 6))%>%
+          layout(font=list(size=18),
+         #title='PCoA Euclidean Distance',
+         scene=list(xaxis=list(title=paste0('Co 3 ',euc_eigenvalues[3],'%'),
+                    showticklabels=FALSE,zerolinecolor='black'),
+         yaxis=list(title=paste0('Co 2 ',euc_eigenvalues[2],'%'),
+                    showticklabels=FALSE,zerolinecolor='black'),
+         zaxis=list(title=paste0('Co 1 ',euc_eigenvalues[1],'%'),
+                    showticklabels=FALSE,zerolinecolor='black'),
+                   aspectratio = list(x=3*euc_eigenvalues[3]/euc_eigenvalues[1], 
+                                      y=3*euc_eigenvalues[2]/euc_eigenvalues[1], 
+                                      z=3)))
+
+# Defina o tamanho desejado em mm e o DPI
+width_mm <- 180
+height_mm <- 170
+dpi <- 300
+
+# Converta para pixels
+width_px <- (width_mm / 25.4) * dpi
+height_px <- (height_mm / 25.4) * dpi
+
+# Salve a imagem
+FileName <- paste(Clustering, "/PCoA Aitchison.pdf", sep = "")
+plotly::save_image(pcoa_euc_fig, FileName, width = width_px, height = height_px, scale = 1)
+
+FileName <- paste(Clustering, "/PCoA Aitchison.png", sep = "")
+plotly::save_image(pcoa_euc_fig, FileName, width = width_px, height = height_px, scale = 1)
+
+# Se quiser exportar para um arquivo Excel
+pcoa_euc_frame <- cbind(SampleID = samdf$SampleID, pcoa_euc_frame)
+FileName <- paste(Clustering,"/PCoA Aitchison.xlsx", sep = "")
+write_xlsx(pcoa_euc_frame,FileName)
+
+# Plot
+pcoa_euc_fig
+```
+
+## 5.8 Hierarchical clustering - Jaccard
+```{r hclust_jac, eval=T, echo=F}
+#Para corroborar o gráfico em 3D, usaremos um simples agrupamento hierárquico e plotar o dendrograma para verificar se os padrões se repetem.
+cluster_ex<-hclust(vegdist(t(seq_counts),method='jaccard'),method="complete")
+plot(cluster_ex,main='Jaccard Hierarchical Agglomerative Clustering',xlab='',sub='')
+```
+
+## 5.9 Non-metric Multidimensional Scaling (NMDS)
+```{r nmds, eval=T, echo=F}
+#Vamos impor a condição em uma técnica de ordenação de que a resposta DEVE ser em 2D. Aqui, recorremos ao Non-Metric Multidimensional Scaling (NMDS - Escalonamento Multidimensional Não-Métrico).
+set.seed(123) # Manter para reprodutibilidade
+
+## Podemos comparar a métrica de distância baseada na composição relativa com a métrica de distância baseada em presença/ausência
+euc_nmds<-metaMDS(euc_dmat,k=2,autotransform=FALSE)
+jac_nmds<-metaMDS(jac_dmat,k=2,autotransform=FALSE)
+
+# Dê uma olhada no estresse - no geral esse valor não é extremamente informativo, mas saiba que o estresse mais próximo de 1 é menos representativo de seus dados reais. Um bom stress fica abaixo de 0.2.
+euc_nmds$stress 
+jac_nmds$stress
+```
+
+### 5.9.1 NMDS on Jaccard and Aitchison Distances
+```{r nmds_plot_ex, eval=T, echo=F}
+# Os eixos para NMDS são totalmente arbitrários, então a escala dos eixos não importa, e os dados podem ser rotacionados/refletidos em torno dos eixos, e o NMDS ainda será o mesmo.
+euc_frame<-data.frame(euc_nmds$points, Group=cbind(as.character(samdf$Group)))
+jac_frame<-data.frame(jac_nmds$points, Group=cbind(as.character(samdf$Group)))
+
+# Para NMDS Aitchison distance
+euc_fig <- ggplot(euc_frame, aes(x = MDS1, y = MDS2, group = Group)) +
+  geom_point(aes(col = Group, size = 3)) +  # Cor por group
+  scale_color_manual(values = palette, name = 'Group') +  # Paleta de cores
+  theme_bw() +
+  theme(legend.position = 'right') +
+  xlab('NMDS 1') + ylab('NMDS 2') +
+  ggtitle('Aitchison Distance NMDS')
+
+# Para NMDS Jaccard distance
+jac_fig <- ggplot(jac_frame, aes(x = MDS1, y = MDS2, group = Group)) +
+  geom_point(aes(col = Group, size = 3)) +  # Cor por group
+  scale_color_manual(values = palette, name = 'Group') +  # Paleta de cores
+  theme_bw() +
+  theme(legend.position = 'right') +
+  xlab('NMDS 1') + ylab('NMDS 2') +
+  ggtitle('Jaccard Distance NMDS')
+
+
+#Salvando
+FileName <- paste(Clustering,"/Jaccard Distance NMDS.pdf", sep = "")
+ggsave(FileName, plot = jac_fig, width = 180, height = 170, units = "mm", dpi = 300)
+
+#Salvando
+FileName <- paste(Clustering,"/Jaccard Distance NMDS.png", sep = "")
+ggsave(FileName, plot = jac_fig, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Se quiser exportar para um arquivo Excel
+jac_frame <- cbind(SampleID = samdf$SampleID, jac_frame)
+FileName <- paste(Clustering,"/Jaccard Distance NMDS.xlsx", sep = "")
+write_xlsx(jac_frame,FileName)
+
+#Salvando
+FileName <- paste(Clustering,"/Aitchison Distance NMDS.pdf", sep = "")
+ggsave(FileName, plot = euc_fig, width = 180, height = 170, units = "mm", dpi = 300)
+
+#Salvando
+FileName <- paste(Clustering,"/Aitchison Distance NMDS.png", sep = "")
+ggsave(FileName, plot = euc_fig, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Se quiser exportar para um arquivo Excel
+euc_frame <- cbind(SampleID = samdf$SampleID, euc_frame)
+FileName <- paste(Clustering,"/Aitchison Distance NMDS.xlsx", sep = "")
+write_xlsx(euc_frame,FileName)
+
+jac_fig
+euc_fig
+```
+
+## 5.10 Betadispersion
+```{r beta_disper_a, eval=F, echo=F}
+# - Testa as diferenças na dispersão em cada grupo 
+#Conferir a abordagem mais adequada (beta ou permdisper)
+df <- microbiome::meta(ps)
+
+# Beta diversity dispersion
+beta.disp <- betadisper(euc_dmat, df$Group)
+anova(beta.disp)
+# Se p <0.05 na betadisper, melhor não utilizar PERMANOVA. Utilizar modelos lineares  ou para efeitos mistos.
+```
+
+## 5.11 PERMANOVA
+### 5.11.1 PERMANOVA for Aitchison distance and Group variable
+```{r permanova_ait,eval=T, echo=F}
+perm <- with(samdf, how(nperm = 999))
+adonis2(euc_dmat ~ Group, data = samdf, permutations = perm)
+```
+
+### 5.11.2 PERMANOVA for Jaccard distance and Group variable
+```{r permanova_jac,eval=T, echo=F}
+perm <- with(samdf, how(nperm = 999))
+adonis2(jac_dmat ~ Group, data = samdf, permutations = perm)
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+
+### 5.11.3 Pairwise PERMANOVA
+```{r pairwise_permanova, eval=FALSE, echo=F}
+# Caso o permanova dê significativo para variáveis não-binárias
+library("RVAideMemoire")
+pairwise.perm.manova(euc_dmat, group, nperm=999, p.method = "fdr")
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+
+# 6.0 Differential Abundance
+We are using ANCOMBC2 for differential abundance analysis
+```{r ANCOMBC2_dif_abund_init, eval=FALSE, echo=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, comment = NA, 
+                      fig.width = 15, fig.height = 15)
+
+options(DT.options = list(
+  initComplete = JS("function(settings, json) {",
+  "$(this.api().table().header()).css({'background-color': 
+  '#000', 'color': '#fff'});","}")))
+```
+
+## 6.1 Adjusting the data 
+```{r ANCOMBC2_adj_data, eval=FALSE, echo=TRUE}
+ps <- readRDS("ps1.dna.no.rds")
+```
+
+## 6.2 Run ANCOMBC2
+```{r run_ANCOMBC2, eval=FALSE, echo=FALSE}
+# Atualizações frequentes e mudanças no algoritmo, incluindo no output. Revisar antes de usar!
+path <- '/home/otavio/Projects/Peruzzo_et_al_2024/Analysis/'
+Dif_abundance = paste(path,"/Differential_abundance/",sep = "")
+dir.create(Dif_abundance)
+set.seed(123)
+# It is recommended that users utilize the default value of B, 
+# which is 100, or larger values for optimal performance.
+output_genus = ancombc2(data = ps, assay_name = "counts", tax_level = "Genus", #tax_level - aglomeração taxonômica
+                  fix_formula = "Group + Age..Years. + Gender + Catelicidine..ng.mL. + VitaminD..ng.mL.", rand_formula = NULL, #fix_formula - modelar as co-variáveis
+                  p_adj_method = "BH", pseudo_sens = TRUE,
+                  prv_cut = 0.1, lib_cut = 1000, s0_perc = 0.05, #prv_cut - ponto de corte de prevalência 
+                  group = "Group", struc_zero = TRUE, neg_lb = TRUE, #group - variável primária
+                  alpha = 0.05, n_cl = 20, verbose = TRUE,
+                  global = TRUE, pairwise = TRUE, dunnet = TRUE, trend = FALSE, #Tipo de análise
+                  iter_control = list(tol = 1e-2, max_iter = 20, 
+                                      verbose = TRUE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = lme4::lmerControl(),
+                  mdfdr_control = list(fwer_ctrl_method = "holm", B = 100))
+
+output_family = ancombc2(data = ps, assay_name = "counts", tax_level = "Family", #tax_level - aglomeração taxonômica
+                  fix_formula = "Group + Age..Years. + Gender + Catelicidine..ng.mL. + VitaminD..ng.mL.", rand_formula = NULL, #fix_formula - modelar as co-variáveis
+                  p_adj_method = "BH", pseudo_sens = TRUE,
+                  prv_cut = 0.1, lib_cut = 1000, s0_perc = 0.05, #prv_cut - ponto de corte de prevalência 
+                  group = "Group", struc_zero = TRUE, neg_lb = TRUE, #group - variável primária
+                  alpha = 0.05, n_cl = 20, verbose = TRUE,
+                  global = TRUE, pairwise = TRUE, dunnet = TRUE, trend = FALSE, #Tipo de análise
+                  iter_control = list(tol = 1e-2, max_iter = 20, 
+                                      verbose = TRUE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = lme4::lmerControl(),
+                  mdfdr_control = list(fwer_ctrl_method = "holm", B = 100))
+
+output_phylum = ancombc2(data = ps, assay_name = "counts", tax_level = "Phylum", #tax_level - aglomeração taxonômica
+                  fix_formula = "Group + Age..Years. + Gender + Catelicidine..ng.mL. + VitaminD..ng.mL.", rand_formula = NULL, #fix_formula - modelar as co-variáveis
+                  p_adj_method = "BH", pseudo_sens = TRUE,
+                  prv_cut = 0.1, lib_cut = 1000, s0_perc = 0.05, #prv_cut - ponto de corte de prevalência 
+                  group = "Group", struc_zero = TRUE, neg_lb = TRUE, #group - variável primária
+                  alpha = 0.05, n_cl = 20, verbose = TRUE,
+                  global = TRUE, pairwise = TRUE, dunnet = TRUE, trend = FALSE, #Tipo de análise
+                  iter_control = list(tol = 1e-2, max_iter = 20, 
+                                      verbose = TRUE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = lme4::lmerControl(),
+                  mdfdr_control = list(fwer_ctrl_method = "holm", B = 100))
+
+save(file = "ANCOMBC.RData", list = c("output_genus", "output_family", "output_phylum"))
+
+# clean environment
+#rm(list = ls(all = TRUE))
+```
+
+### 6.2.1 Genus level
+#### Structural zeros 
+```{r struc_zeros, eval=T, echo=F}
+load('ANCOMBC.RData')
+tab_zero = output_genus$zero_ind
+tab_zero %>%
+    datatable(caption = "The detection of structural zeros on Genus level")
+FileName <- paste(Dif_abundance,"/Structural_zeros_genus.xlsx", sep = "")
+write_xlsx(tab_zero, FileName)
+```
+
+#### Primary analysis
+```{r ANCOMBC2_prim_analysis_genus, eval=T, echo=F}
+#As análises subsequentes são referentes a análise primária de abundância diferencial. Ainda existem as possibilidades da análise global, multiple pairwise comparisons, Dunnett's test e pattern analysis. Verificar scripts complementares.
+res_prim = output_genus$res
+```
+
+#### Results for group - heatmap
+```{r ANCOMBC2_prim_genus, eval=T, echo=F}
+# Inspecionar o output para verificar o nome das colunas e ajustar o script
+# Selecionar colunas relacionadas à variável 'Group'
+df_group = res_prim %>%
+    dplyr::select(taxon, contains("Group"))
+
+# Filtrar táxons com diferenças significativas entre 'Control' e 'Rosacea'
+df_fig_group1 = df_group %>%
+    dplyr::filter(diff_GroupRosacea == 1) %>%
+    dplyr::mutate(lfc1 = ifelse(diff_GroupRosacea == 1, 
+                                round(lfc_GroupRosacea, 2), 0)) %>%
+    tidyr::pivot_longer(cols = lfc1, 
+                        names_to = "group", values_to = "value") %>%
+    dplyr::arrange(taxon)
+
+df_fig_group2 = df_group %>%
+    dplyr::filter(diff_GroupRosacea == 1) %>%
+    dplyr::mutate(lfc1 = ifelse(passed_ss_GroupRosacea == 1 & diff_GroupRosacea == 1, 
+                                "aquamarine3", "black")) %>%
+    tidyr::pivot_longer(cols = lfc1, 
+                        names_to = "group", values_to = "color") %>%
+    dplyr::arrange(taxon)
+
+df_fig_group = df_fig_group1 %>%
+    dplyr::left_join(df_fig_group2, by = c("taxon", "group"))
+
+# Recode 'group' levels to meaningful labels
+df_fig_group$group = recode(df_fig_group$group, 
+                            `lfc1` = "Control - Rosacea")
+#df_fig_group$group = factor(df_fig_group$group, 
+                            #levels = c("Control - Rosacea")
+
+lo = floor(min(df_fig_group$value))
+up = ceiling(max(df_fig_group$value))
+mid = (lo + up)/2
+
+# Criar heatmap
+fig_group = df_fig_group %>%
+  ggplot(aes(x = group, y = taxon, fill = value)) + 
+  geom_tile(color = "black") +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                       na.value = "white", midpoint = mid, limit = c(lo, up),
+                       name = NULL) +
+  geom_text(aes(group, taxon, label = value, color = color), size = 4) +
+  scale_color_identity(guide = "none") +
+  labs(x = NULL, y = NULL, title = "Log Fold Changes: Control vs Rosacea") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Mostrar a figura 
+print(fig_group)
+
+# Definir o caminho e o nome do arquivo
+FileName <- paste(Dif_abundance, "/Primary_genus.xlsx", sep = "")
+# Salvar o dataframe res_prim em formato Excel
+write_xlsx(res_prim, FileName)
+
+# Salvar a figura em formato PDF
+FileName <- paste(Dif_abundance, "/Primary_genus.pdf", sep = "")
+ggsave(FileName, plot = fig_group, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Salvar a figura em formato PNG
+FileName <- paste(Dif_abundance, "/Primary_genus.png", sep = "")
+ggsave(FileName, plot = fig_group, width = 180, height = 170, units = "mm", dpi = 300)
+
+```
+Any taxon highlighted in green indicates its successful passage through the sensitivity analysis for pseudo-count addition.
+
+#### Results for Age
+```{r ANCOMBC2_Age_genus, eval=T, echo=F}
+# Selecionar colunas relacionadas à variável 'Age..Years.'
+df_age = res_prim %>%
+    dplyr::select(taxon, ends_with("Age..Years.")) 
+
+# Filtrar táxons com diferenças significativas e organizar os dados
+df_fig_age = df_age %>%
+    dplyr::filter(diff_Age..Years. == 1) %>% 
+    dplyr::arrange(desc(lfc_Age..Years.)) %>%
+    dplyr::mutate(direct = ifelse(lfc_Age..Years. > 0, "Positive LFC", "Negative LFC"),
+                  color = ifelse(passed_ss_Age..Years. == 1, "aquamarine3", "black"))
+
+# Ajustar os níveis do fator 'taxon' com base na ordem
+df_fig_age$taxon = factor(df_fig_age$taxon, levels = df_fig_age$taxon)
+
+# Ajustar os níveis do fator 'direct'
+df_fig_age$direct = factor(df_fig_age$direct, 
+                           levels = c("Positive LFC", "Negative LFC"))
+
+# Criar o gráfico de barras com erro padrão
+fig_age = df_fig_age %>%
+    ggplot(aes(x = taxon, y = lfc_Age..Years., fill = direct)) + 
+    geom_bar(stat = "identity", width = 0.7, color = "black", 
+             position = position_dodge(width = 0.4)) +
+    geom_errorbar(aes(ymin = lfc_Age..Years. - se_Age..Years., 
+                      ymax = lfc_Age..Years. + se_Age..Years.), 
+                  width = 0.2, position = position_dodge(0.05), color = "black") + 
+    labs(x = NULL, y = "Log fold change", 
+         title = "Log fold changes as one unit increase of age") + 
+    scale_fill_discrete(name = NULL) +
+    scale_color_discrete(name = NULL) +
+    theme_bw() + 
+    theme(plot.title = element_text(hjust = 0.5),
+          panel.grid.minor.y = element_blank(),
+          axis.text.x = element_text(angle = 60, hjust = 1,
+                                     color = df_fig_age$color))
+
+# Salvar a figura em formato PDF
+FileName <- paste(Dif_abundance, "/Age_genus.pdf", sep = "")
+ggsave(FileName, plot = fig_age, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Salvar a figura em formato PNG
+FileName <- paste(Dif_abundance, "/Age_genus.png", sep = "")
+ggsave(FileName, plot = fig_age, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Exibir o gráfico
+print(fig_age)
+```
+Any taxon highlighted in green indicates its successful passage through the sensitivity analysis for pseudo-count addition.
+
+#### Results for Catelicidine
+```{r ANCOMBC2_catelicidine_genus, eval=T, echo=F}
+# Selecionar colunas relacionadas à variável 'Catelicidine..ng.mL.'
+df_catelicidine <- res_prim %>%
+    select(taxon, ends_with("Catelicidine..ng.mL."))
+
+# Filtrar táxons com diferenças significativas e organizar os dados
+df_fig_catelicidine <- df_catelicidine %>%
+    filter(diff_Catelicidine..ng.mL. == 1) %>%
+    arrange(desc(lfc_Catelicidine..ng.mL.)) %>%
+    mutate(direct = ifelse(lfc_Catelicidine..ng.mL. > 0, "Positive LFC", "Negative LFC"),
+           color = ifelse(passed_ss_Catelicidine..ng.mL. == 1, "aquamarine3", "black"))
+
+# Ajustar os níveis do fator 'taxon' com base na ordem
+df_fig_catelicidine$taxon <- factor(df_fig_catelicidine$taxon, levels = df_fig_catelicidine$taxon)
+
+# Ajustar os níveis do fator 'direct'
+df_fig_catelicidine$direct <- factor(df_fig_catelicidine$direct, 
+                                     levels = c("Positive LFC", "Negative LFC"))
+
+# Criar o gráfico de barras com erro padrão
+fig_catelicidine <- df_fig_catelicidine %>%
+    ggplot(aes(x = taxon, y = lfc_Catelicidine..ng.mL., fill = direct)) + 
+    geom_bar(stat = "identity", width = 0.7, color = "black", 
+             position = position_dodge(width = 0.4)) +
+    geom_errorbar(aes(ymin = lfc_Catelicidine..ng.mL. - se_Catelicidine..ng.mL., 
+                      ymax = lfc_Catelicidine..ng.mL. + se_Catelicidine..ng.mL.), 
+                  width = 0.2, position = position_dodge(0.05), color = "black") + 
+    labs(x = NULL, y = "Log fold change", 
+         title = "Log fold changes as one unit increase of Catelicidine") + 
+    scale_fill_discrete(name = NULL) +
+    scale_color_discrete(name = NULL) +
+    theme_bw() + 
+    theme(plot.title = element_text(hjust = 0.5),
+          panel.grid.minor.y = element_blank(),
+          axis.text.x = element_text(angle = 60, hjust = 1,
+                                     color = df_fig_catelicidine$color))
+
+# Salvar a figura em formato PDF
+FileName <- file.path(Dif_abundance, "Catelicidine_genus.pdf")
+ggsave(FileName, plot = fig_catelicidine, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Salvar a figura em formato PNG
+FileName <- file.path(Dif_abundance, "Catelicidine_genus.png")
+ggsave(FileName, plot = fig_catelicidine, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Exibir o gráfico
+print(fig_catelicidine)
+```
+Any taxon highlighted in green indicates its successful passage through the sensitivity analysis for pseudo-count addition.
+
+#### Results for Vitamin D
+```{r ANCOMBC2_vitD_genus, eval=T, echo=F}
+# Selecionar colunas relacionadas à variável 'VitaminD..ng.mL.'
+df_vitaminD <- res_prim %>%
+    select(taxon, ends_with("VitaminD..ng.mL."))
+
+# Filtrar táxons com diferenças significativas e organizar os dados
+df_fig_vitaminD <- df_vitaminD %>%
+    filter(diff_VitaminD..ng.mL. == 1) %>%
+    arrange(desc(lfc_VitaminD..ng.mL.)) %>%
+    mutate(direct = ifelse(lfc_VitaminD..ng.mL. > 0, "Positive LFC", "Negative LFC"),
+           color = ifelse(passed_ss_VitaminD..ng.mL. == 1, "aquamarine3", "black"))
+
+# Ajustar os níveis do fator 'taxon' com base na ordem
+df_fig_vitaminD$taxon <- factor(df_fig_vitaminD$taxon, levels = df_fig_vitaminD$taxon)
+
+# Ajustar os níveis do fator 'direct'
+df_fig_vitaminD$direct <- factor(df_fig_vitaminD$direct, 
+                                 levels = c("Positive LFC", "Negative LFC"))
+
+# Criar o gráfico de barras com erro padrão
+fig_vitaminD <- df_fig_vitaminD %>%
+    ggplot(aes(x = taxon, y = lfc_VitaminD..ng.mL., fill = direct)) + 
+    geom_bar(stat = "identity", width = 0.7, color = "black", 
+             position = position_dodge(width = 0.4)) +
+    geom_errorbar(aes(ymin = lfc_VitaminD..ng.mL. - se_VitaminD..ng.mL., 
+                      ymax = lfc_VitaminD..ng.mL. + se_VitaminD..ng.mL.), 
+                  width = 0.2, position = position_dodge(0.05), color = "black") + 
+    labs(x = NULL, y = "Log fold change", 
+         title = "Log fold changes as one unit increase of Vitamin D") + 
+    scale_fill_discrete(name = NULL) +
+    scale_color_discrete(name = NULL) +
+    theme_bw() + 
+    theme(plot.title = element_text(hjust = 0.5),
+          panel.grid.minor.y = element_blank(),
+          axis.text.x = element_text(angle = 60, hjust = 1,
+                                     color = df_fig_vitaminD$color))
+
+# Salvar a figura em formato PDF
+FileName <- file.path(Dif_abundance, "VitaminD_genus.pdf")
+ggsave(FileName, plot = fig_vitaminD, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Salvar a figura em formato PNG
+FileName <- file.path(Dif_abundance, "VitaminD_genus.png")
+ggsave(FileName, plot = fig_vitaminD, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Exibir o gráfico
+print(fig_vitaminD)
+```
+Any taxon highlighted in green indicates its successful passage through the sensitivity analysis for pseudo-count addition.
+
+# 7.0 Metabolic prediction (PICRUSt2)
+## 7.1 Exporting the data for PICRUSt2 processing
+The exported files will be used for external processing with PICRUSt2.
+```{r exp_picrust2, eval=FALSE, echo=FALSE}
+#Para o picrust2, utiliza-se o objeto phyloseq não aglomerado, mas filtrado.
+library(phyloseq)
+library(Biostrings)
+
+ps <- readRDS("ps1.dna.rds")
+
+# Exportar taxonomy table como "tax.txt" Somente necessário se for usar o qiime2
+tax<-as(tax_table(ps),"matrix")
+tax_cols <- colnames(tax)
+tax<-as.data.frame(tax)
+tax$taxonomy<-do.call(paste, c(tax[tax_cols], sep=";"))
+for(co in tax_cols) tax[co]<-NULL
+write.table(tax, "tax.txt", quote=FALSE, col.names=FALSE, sep="\t")
+
+#Exportar o fasta das sequências
+sequences <- refseq(ps)
+sequences_char <- as.character(sequences)
+fasta_headers <- paste(">", names(sequences), sep="")
+fasta_content <- paste(fasta_headers, sequences_char, sep="\n")
+writeLines(fasta_content, "sequences.fasta")
+
+# Exportar feature/OTU table
+# Formato biom file
+library(biomformat);packageVersion("biomformat")
+otu<-t(as(otu_table(ps),"matrix")) # 't' para transpor se taxa_are_rows=FALSE, que geralmente é o nosso caso
+#if taxa_are_rows=TRUE
+#otu<-as(otu_table(ps),"matrix"))
+otu_biom<-make_biom(data=otu)
+write_biom(otu_biom,"otu_biom.biom")
+
+# Como txt (caso dê algum erro com o formato biom) a partir do dado de pré-processamento
+#write.table(t(seqtab), "seqtab.txt", sep="\t", row.names=TRUE, col.names=NA, quote=FALSE)
+#ou do objeto phyloseq, 't' se taxa_are_rows=FALSE (geralmente o nosso caso), sem 't' se taxa_are_rows=TRUE
+write.table(t(otu_table(ps), "seqtab.txt",sep="\t", row.names=TRUE, col.names=NA, quote=FALSE)
+
+# Exportar metadados (se a sua tabela de metadados já está adequadamente formatada, pode usar ela em formato csv, mas como geralmente tratamos as variáveis dentro do objeto phyloseq, o ideal é exportar)
+sam_data <- as.matrix(sample_data(ps))
+write.table(sam_data,"sample_metadata.txt", sep="\t", row.names=FALSE, col.names=TRUE, quote=FALSE)
+
+# clean environment
+rm(list = ls(all = TRUE))
+
+#Os arquivos gerados devem ser utilizados para o pipeline do Picrust2 no terminal, e o output do Picrust2 deve ser utilizado nos chunks abaixo para análises e figuras.
+```
+
+## 7.2 Functional prediction - KEGG Orthology
+```{r picrust2_output_KO, eval=T, echo=F}
+# Predição funcional KEGG Orthology com variável primária binária
+# Importando os dados
+abundance_file <- "/home/metagenomica/LABRESIS/OtavioLovison/Pycrust2_filtered/picrust2_out_pipeline/KO_metagenome_out/pred_metagenome_unstrat.tsv"
+metadata <- read_delim(
+    "/home/metagenomica/LABRESIS/OtavioLovison/Pycrust2_filtered/sample_metadata.txt",
+    delim = "\t",
+    escape_double = FALSE,
+    trim_ws = TRUE
+)
+#Transformando em dataframe
+abundance_data <- read_delim(abundance_file, delim = "\t", col_names = TRUE, trim_ws = TRUE)
+
+KEGG_results_data_input <- ggpicrust2(data = abundance_data,
+                                 metadata = metadata,
+                                 group = "COVID19",
+                                 pathway = "KO",
+                                 daa_method = "LinDA",
+                                 ko_to_kegg = TRUE,
+                                 order = "pathway_class",
+                                 p_values_bar = TRUE,
+                                 x_lab = "KEGG metabolic functional prediction")
+
+# Acesse o plot e o dataframe 
+plot <- KEGG_results_file_input[[1]]$plot
+results <- KEGG_results_file_input[[1]]$results
+
+# clean environment
+#rm(list = ls(all = TRUE))
+```
+
+## 7.3 Metabolic prediction - MetaCyc Pathways 
+```{r picrust2_output_metacyc, eval=T, echo=F}
+# Para variável primária binária
+# Importando os dados
+#pathways_out é a pasta que armazena o output do metacyc
+abundance_file <- "/home/metagenomica/LABRESIS/OtavioLovison/Pycrust2_filtered/picrust2_out_pipeline/pathways_out/path_abun_unstrat.tsv"
+metadata <- read_delim(
+    "/home/metagenomica/LABRESIS/OtavioLovison/Pycrust2_filtered/sample_metadata.txt",
+    delim = "\t",
+    escape_double = FALSE,
+    trim_ws = TRUE
+)
+
+#Transformando em dataframe
+abundance_data <- read_delim(abundance_file, delim = "\t", col_names = TRUE, trim_ws = TRUE)
+
+metacyc_results_file_input <- ggpicrust2(data = abundance_data,
+                                 metadata = metadata,
+                                 group = "COVID19",
+                                 pathway = "MetaCyc",
+                                 daa_method = "LinDA",
+                                 ko_to_kegg = FALSE,
+                                 order = "group",
+                                 p_values_bar = TRUE,
+                                 x_lab = "MetaCyc Pathway Functional Prediction")
+
+# Acesse o plot e o dataframe
+plot <- metacyc_results_file_input[[1]]$plot
+results <- metacyc_results_file_input[[1]]$results
+```
+
+### 7.3.1 Pathway Heatmap
+```{r metacyc_pathway_heatmap, eval=T, echo=F}
+# Filter features with p < 0.05
+feature_with_p_0.05 <- daa_results_df %>% 
+  filter(p_adjust < 0.05)
+
+# Create the heatmap
+pathway_heatmap <- pathway_heatmap(
+                    abundance = metacyc_abundance %>% 
+                    right_join(
+                    daa_results_df %>% select(all_of(c("feature","description"))),
+                    by = c("pathway" = "feature")
+                    ) %>% 
+                    filter(pathway %in% feature_with_p_0.05$feature) %>% 
+                    select(-"pathway") %>% 
+                    column_to_rownames("description"),
+                    metadata = metadata, 
+                    group = "COVID19"
+                    )
+
+```
+
+### 7.3.2 Pathway PCA
+```{r pathway_PCA, eval=T, echo=F}
+color_choices <- c("#68228B","#7FFF00","#00bfff", "#FF521C")
+pathway_pca <- pathway_pca(abundance = metacyc_abundance %>% column_to_rownames("pathway"), metadata = metadata, group = "COVID19")
+```
+
+# 8.0 Bayesian zero-inflated Dirichlet-multinomial regression model for multivariate compositional count data (ZIDMbvs)
+```{r zidmbvs, eval=T, echo=F}
+# Por orientação do desenvolvedor do modelo, vamos utilizar o dado aglomerado em nível de gênero para a modelagem.
+# Agradecer o Dr. Matthew D. Koslovsky do Department of Statistics, Colorado State University pelas discussões acerca da aplicação do Bayesian zero-inflated Dirichlet-multinomial regression model for multivariate compositional count data (Modelo de regressão Bayesiano Dirichlet-multinomial com inflação de zeros)
+
+#Criando o diretório
+path <- '/home/otavio/Projects/Miller_et_al_2024_gengivitis/Analysis/'
+ZIDMbvs = paste(path,"/ZIDMbvs/",sep = "")
+dir.create(ZIDMbvs)
+
+#Importando objeto ps
+ps <- readRDS("ps1.dna.genus.rds")
+ps
+
+#Extraindo os dados
+asv <- as.data.frame(otu_table(ps))
+asv <- as.matrix(asv)
+samdf <- microbiome::meta(ps)
+
+# Removendo as variáveis categóricas desnecessárias
+cols_to_remove <- c("eppendorfID", "sampleID", "patientID", "seqID", "sample.type", "Date", 
+                    "Sex", "Age", "Exam", "VPI.Site.1", "VPI.Site.2", "VPI.Site.3", "VPI.Site.4", 
+                    "MBI.Site.1", "MBI.Site.2", "MBI.Site.3", "MBI.Site.4", 
+                    "BoP.Site.1", "BoP.Site.2", "BoP.Site.3", "BoP.Site.4", "batch")
+
+samdf2 <- samdf[, !(names(samdf) %in% cols_to_remove)]
+
+# Calculando a média das variáveis (se for pool) PPD.Site e CAL.Site para modelagem
+samdf2$PPD_Mean <- rowMeans(samdf2[, grep("PPD.Site", names(samdf2), value = TRUE)], na.rm = TRUE)
+samdf2$CAL_Mean <- rowMeans(samdf2[, grep("CAL.Site", names(samdf2), value = TRUE)], na.rm = TRUE)
+
+# Removendo as colunas individuais dos sítios após calcular a média
+cols_to_remove_PPD_CAL <- c(grep("PPD.Site", names(samdf2), value = TRUE), 
+                            grep("CAL.Site", names(samdf2), value = TRUE))
+
+samdf3 <- samdf2[, !(names(samdf2) %in% cols_to_remove_PPD_CAL)]
+
+#Convertendo samdf3 em matrix
+samdf3 <- as.matrix(samdf3)
+
+#Padronizando as covariáveis (scaling)
+samdf3 <- scale(samdf3[, c("PPD_Mean", "CAL_Mean")]) 
+
+#Ajustando o modelo
+iterations <- 10000
+thin <- 10
+fit_ZIDMbvs <-  ZIDMbvs_R( Z = asv, X = samdf3, X_theta = samdf3, iterations = iterations, thin = thin )
+
+FileName <- paste(ZIDMbvs,"/fit_ZIDMbvs.rds", sep = "")
+saveRDS(fit_ZIDMbvs,FileName)
+```
+
+8.1 ## Model convergence plots
+To demonstrate the convergence of the algorithm, we plotted the number of active terms in the model over the MCMC (Markov Chain Monte Carlo) iterations:
+The code generates plots to assess the algorithm's convergence based on the number of active terms (zeta and varphi) throughout the MCMC iterations. The goal is to visualize the stability of the number of active terms as the algorithm progresses. These metrics were applied to evaluate the selection of covariates associated with both the zero-inflation indicators (zeta) and the compositional counts (varphi).
+```{r model_converg_plots, eval=T, echo=F}
+# Para demonstrar a convergência do algoritmo, plotamos o número de termos ativos no modelo ao longo das iterações MCMC (Markov chain Monte Carlo): O código gera gráficos para avaliar a convergência do algoritmo baseado no número de termos ativos (zeta e varphi) ao longo das iterações MCMC. O objetivo é visualizar a estabilidade do número de termos ativos à medida que o algoritmo avança. Essas métricas foram aplicadas para avaliar a seleção de covariáveis associadas tanto aos indicadores de inflação zero (zeta) quanto às contagens composicionais (varphi).
+
+y <- apply( fit_ZIDMbvs$zeta, 3, sum)
+x <- 1:length( y )
+dat <- data.frame( x, y )
+conv1 <-  ggplot(dat, aes(x, y)) + geom_line(aes(x=x, y=y)) + labs(x = "MCMC Sample", y = "Count",  title = " At-Risk Indicator Active Terms") + theme( title =element_text(size=10) )
+
+y <- apply( fit_ZIDMbvs$varphi, 3, sum)
+x <- 1:length( y )
+dat <- data.frame( x, y )
+conv2 <-  ggplot(dat, aes(x, y)) + geom_line(aes(x=x, y=y)) + labs(x = "MCMC Sample", y = "Count",  title = "Compositional Count Active Terms")+ theme( title =element_text(size=10 ) )
+
+par(mar = c(5, 5, .1, .1))
+print(conv1)
+print(conv2)
+```
+
+The plots of the MPPIs (marginal posterior probabilities of inclusion) for both levels of the model – the risk indicators (zeta) and the compositional counts (varphi) – are presented below. The horizontal dashed line indicates the selection threshold. Covariates with corresponding MPPIs above 0.50 are considered active (included) in the model.
+```{r mppi_plots, eval=T, echo=F}
+# Os gráficos dos MPPIs (probabilidade marginal posterior de inclusão) correspondentes para ambos os níveis do modelo - os indicadores de risco (zeta) e as contagens composicionais (varphi) - são apresentados abaixo. A linha pontilhada horizontal indica o limiar de seleção. As covariáveis com MPPIs correspondentes acima de 0,50 são consideradas ativas (incluídas) no modelo.
+
+MPPI_varphi <- apply( fit_ZIDMbvs$varphi[ ,, 251:1000 ], c(1,2), mean )
+MPPI_zeta <- apply( fit_ZIDMbvs$zeta[ ,, 251:1000 ], c(1,2), mean ) 
+y <- c(MPPI_zeta[,-1])
+x <- seq(1, length(y))
+data <- data.frame(cbind(y, x))
+
+aa <- ggplot(data, aes(x, y)) + geom_segment(aes(xend = x, 
+                                                 yend = 0), size = 0.2, lineend = "butt") + labs(x = "Covariate Index", 
+                                                                                                 y = "MPPI", title = " At-Risk Indicator Associations") + geom_abline(slope = 0, intercept = 0.5, linetype = "dashed") + theme( title =element_text(size=8 ) )
+
+yb <- c(MPPI_varphi[,-1])
+xb <- seq(1, length(yb))
+datab <- data.frame(cbind(yb, xb))
+
+bb <- ggplot(datab, aes(xb, yb)) + geom_segment(aes(xend = xb, 
+                                                 yend = 0), size = 0.2, lineend = "butt") + labs(x = "Covariate Index", 
+                                                                                                 y = "MPPI", title = "Compositional Count Associations") + geom_abline(slope = 0, intercept = 0.5, linetype = "dashed") + theme( title =element_text(size=9 ) )
+
+par(mar = c(4, 4, .1, .1))
+print(aa)
+print(bb)
+```
+
+## 8.2 Extracting the fitted abundances
+The fitted abundances are extracted for further analysis
+```{r ext_abun, eval=T, echo=F}
+# Extrair as abundâncias relativas estimadas
+cc <- fit_ZIDMbvs$cc[ ,, 251:1000 ] #Ajustar o intervalo de MCMC a ser utilizado - o burn in (iterações até a estabilização do modelo, observado na figura "Compositional Count Active Terms") deve ser descontado. 
+
+#Extraindo a média contagens absolutas
+asv_model_counts <- apply(cc, c(1,2), mean) 
+rownames(asv_model_counts) <- rownames(asv)  # Atribuir nomes das amostras (linhas)
+colnames(asv_model_counts) <- colnames(asv)  # Atribuir nomes dos ASVs (colunas)
+FileName <- paste(ZIDMbvs,"/asv_model_counts.rds", sep = "")
+saveRDS(asv_model_counts,FileName)
+
+#Normalização
+norm_relative_abundances <- apply(cc, c(1, 3), function(x) x / sum(x)) #Abundãncia relativa
+
+# Calcular a média das abundâncias relativas sobre as iterações MCMC
+relative_abundances_mean <- apply(norm_relative_abundances, c(1,2), mean)
+
+#Transpondo
+relative_abundances_mean <- t(relative_abundances_mean)
+rownames(relative_abundances_mean) <- rownames(asv)  # Atribuir nomes das amostras (linhas)
+colnames(relative_abundances_mean) <- colnames(asv)  # Atribuir nomes dos ASVs (colunas)
+FileName <- paste(ZIDMbvs,"/relative_abundances_mean.rds", sep = "")
+saveRDS(relative_abundances_mean,FileName)
+
+#Montando o objeto phyloseq com as abundâncias corrigidas
+ps.model <- ps
+ps.model <- phyloseq(tax_table(ps),
+                     sample_data(samdf),
+                     otu_table(asv_model_counts, taxa_are_rows = FALSE),
+                     refseq(ps))
+FileName <- paste(ZIDMbvs,"/ps.model.rds", sep = "")
+saveRDS(ps.model, FileName)
+```
+
+## 8.3 Associations
+The MCMC samples for the regression coefficients are also captured in the ZIDMbvs_R output (i.e., $beta_gamma). The exp(beta_gamma_jp) is the expected multiplicative change in the jth concentration parameter of the Dirichlet distribution with a 1 unit increase in p. Admittedly, this is difficult to interpret from an applied perspective. You can view these as the estimated association with the counts as well, but that somewhat ignores the compositional aspect of the data. Alternatively, you can calculate how a covariate is associated with the relative abundances using the output.
+
+### 8.3.1 Absolute counts
+```{r associations_counts, eval=T, echo=F}
+# As amostras MCMC para os coeficientes de regressão também são capturadas na saída do ZIDMbvs_R (ou seja, $beta_gamma). O exp(beta_gamma_jp) é a mudança multiplicativa esperada no j-ésimo parâmetro de concentração da distribuição de Dirichlet com um aumento de 1 unidade em p. Admitidamente, isso é difícil de interpretar de uma perspectiva aplicada. Você pode visualizar isso como a associação estimada com as contagens, mas isso, de certa forma, ignora o aspecto composicional dos dados. Alternativamente, você pode calcular como uma covariável está associada às abundâncias relativas usando a saída.
+
+# Engenharia dos dados - selecionando beta_gamma
+beta_gamma_means <- apply( fit_ZIDMbvs$beta_gamma[ ,-1, (floor(iterations/thin)/2 + 1):(floor(iterations/thin))  ], c( 1, 2 ), mean) 
+beta_gamma_means <- beta_gamma_means*(MPPI_varphi[,-1] > 0.5)
+rownames( beta_gamma_means ) <- colnames(asv) 
+colnames( beta_gamma_means ) <- colnames(samdf3) 
+
+selected_names <- numeric()
+for( i in 1:nrow(beta_gamma_means)){
+  for( j in 1:ncol(beta_gamma_means)){
+    if( beta_gamma_means[i,j] != 0 ){
+      selected_names <- rbind(selected_names, c(row.names( beta_gamma_means )[i], colnames( beta_gamma_means )[j],  beta_gamma_means [i,j]))
+    }
+  }
+}
+
+#Se precisar ajustar algum nome
+#selected_names <- apply( selected_names, MARGIN = c(1,2), FUN = function(x) { gsub("Incertae Sedis", "inc. sed.", x) })
+
+X <- unique( selected_names[,1] )
+Y <- unique( selected_names[,2] )
+R <- matrix( 0, nrow = ( length( X ) ),ncol = length( Y ) )
+rownames(R) <- X
+colnames(R) <- Y
+for(i in 1:nrow(selected_names)){
+  R[ which( rownames( R ) %in% selected_names[ i, 1] ), which( colnames( R ) %in% selected_names[ i, 2] )] <- selected_names[ i, 3]
+}
+
+R <- matrix( as.numeric( R ), nrow = ( length( X ) ), ncol = length( Y ) )
+rownames(R) <- X
+colnames(R) <- Y
+
+# Plot the heatmap
+brewer.pal(500,"RdYlGn")
+redblue(500)
+paletteLength <- 51
+myColor <- colorRampPalette(c("dodgerblue3","ivory1","tomato3"))(paletteLength)
+# length(breaks) == length(paletteLength) + 1
+# use floor and ceiling to deal with even/odd length pallettelengths
+myBreaks <- c(seq(min(R), 0, length.out=ceiling(paletteLength/2) + 1), 
+              seq(max(R)/paletteLength, max(R), length.out=floor(paletteLength/2)))
+counts_heatmap <- pheatmap(R, color=myColor, breaks=myBreaks, fontsize = 7.5,  treeheight_row =0 ,treeheight_col =0, angle_col = 315)
+counts_heatmap
+
+#Salvando
+FileName <- paste(ZIDMbvs,"/Associations - Absolute Counts.pdf", sep = "")
+ggsave(FileName, plot = counts_heatmap, width = 180, height = 170, units = "mm", dpi = 300)
+
+#Salvando
+FileName <- paste(ZIDMbvs,"/Associations - Absolute Counts.png", sep = "")
+ggsave(FileName, plot = counts_heatmap, width = 180, height = 170, units = "mm", dpi = 300)
+
+R <- as.data.frame(R)
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(ZIDMbvs,"/Associations - Absolute Counts.xlsx", sep = "")
+write_xlsx(R,FileName)
+```
+
+### 8.3.2 Relative Abundances (ainda em construção)
+```{r associations_rel_abund, eval=T, echo=F}
+# R function
+betaMeanOneUnitChange <- function(betas, X) {
+  #' Average  Multiplicative Change in Relative Abundance
+  #'
+  #' This function finds the average multiplicative change in  
+  #' Relative Abundance (RA) of each j taxa given a one unit  
+  #' increase in each p covariates.
+  #'
+  #' @params betas (matrix) P by J matrix where P is the number
+  #' of coefficients including the intercept and J is the number
+  #' of taxa.
+  #' @params X (matrix) N by P matrix where N is the number of 
+  #' measurements.
+  #' @return (matrix) P by J matrix with the multiplicative change in RA
+  #' for all j corresponding each 2:p covariates. Note that the
+  #' first row are zeros due to it corresponding to the intercepts.
+  NUM_CAT <- dim(betas)[2]
+  NUM_COEF <- dim(betas)[1]
+  oneUnitChange <- matrix(0, NUM_COEF, NUM_CAT)
+
+  for (p in 2:NUM_COEF) { 
+    adding <- rep(0, NUM_COEF) 
+    adding[p] <- 1 
+    frac <- rowSums(exp(X%*%betas))/rowSums(exp(sweep(X, 2, adding,
+                                                         "+")%*%betas))
+    for (c in 1:NUM_CAT) {
+      oneUnitChange[p, c] <- mean(exp(betas[p, c])*frac)
+    }
+  }
+
+  return(oneUnitChange)
+}
+
+# Engenharia dos dados - selecionando beta_gamma
+betas <- apply( fit_ZIDMbvs$beta_gamma[ , , (floor(iterations/thin)/2 + 1):(floor(iterations/thin))  ], c( 1, 2 ), mean)
+
+#Selecionando os significativos
+betas <- betas*(MPPI_varphi[,] > 0.5)
+betas <- t(betas)
+
+#Ajustando o X para corresponder ao intercept
+X <- cbind(1, samdf3)
+
+#Resultado da função
+fun_res <- betaMeanOneUnitChange(betas, X) 
+
+###############################################################
+rownames( fun_res ) <- colnames(X) 
+colnames( fun_res ) <- colnames(asv) 
+
+selected_names <- numeric()
+for( i in 1:nrow(fun_res)){
+  for( j in 1:ncol(fun_res)){
+    if( fun_res[i,j] != 0 ){
+      selected_names <- rbind(selected_names, c(row.names( fun_res )[i], colnames( fun_res )[j],  fun_res [i,j]))
+    }
+  }
+}
+
+#Se precisar ajustar algum nome
+#selected_names <- apply( selected_names, MARGIN = c(1,2), FUN = function(x) { gsub("Incertae Sedis", "inc. sed.", x) })
+
+
+X <- unique( selected_names[,1] )
+Y <- unique( selected_names[,2] )
+R <- matrix( 0, nrow = ( length( X ) ),ncol = length( Y ) )
+rownames(R) <- X
+colnames(R) <- Y
+for(i in 1:nrow(selected_names)){
+  R[ which( rownames( R ) %in% selected_names[ i, 1] ), which( colnames( R ) %in% selected_names[ i, 2] )] <- selected_names[ i, 3]
+}
+
+R <- matrix( as.numeric( R ), nrow = ( length( X ) ), ncol = length( Y ) )
+rownames(R) <- X
+colnames(R) <- Y
+
+# Plot the heatmap
+brewer.pal(500,"RdYlGn")
+redblue(500)
+paletteLength <- 51
+myColor <- colorRampPalette(c("dodgerblue3","ivory1","tomato3"))(paletteLength)
+# length(breaks) == length(paletteLength) + 1
+# use floor and ceiling to deal with even/odd length pallettelengths
+myBreaks <- c(seq(min(R), 0, length.out=ceiling(paletteLength/2) + 1), 
+              seq(max(R)/paletteLength, max(R), length.out=floor(paletteLength/2)))
+counts_heatmap <- pheatmap(R, color=myColor, breaks=myBreaks, fontsize = 7.5,  treeheight_row =0 ,treeheight_col =0, angle_col = 315)
+counts_heatmap
+
+#Salvando
+FileName <- paste(ZIDMbvs,"/Associations - Relative Counts.pdf", sep = "")
+ggsave(FileName, plot = counts_heatmap, width = 180, height = 170, units = "mm", dpi = 300)
+
+#Salvando
+FileName <- paste(ZIDMbvs,"/Associations - Relative Counts.png", sep = "")
+ggsave(FileName, plot = counts_heatmap, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(ZIDMbvs,"/Associations - Relative Counts.xlsx", sep = "")
+write_xlsx(R,FileName)
+```
+
+# 9.0 Session info
+```{r session_info, eval=TRUE, echo=F}
+sessionInfo()
+```
