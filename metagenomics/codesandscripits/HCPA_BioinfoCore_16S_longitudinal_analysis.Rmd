@@ -1,0 +1,3112 @@
+---
+title: "Aqui vai o título (este workflow e para analises longitudinais)"
+author: "Otávio von Ameln Lovison"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+    latex_engine: xelatex
+  word_document: 
+    toc: yes
+    toc_depth: '5'
+  html_document:
+    df_print: paged
+    theme: cerulean
+    highlight: haddock
+    toc: yes
+    toc_depth: 3
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+    code_fold: show
+always_allow_html: yes
+---
+
+```{r setup, include = FALSE}
+# Este primeiro chunk deve ser executado sempre que qualquer análise for ser realizada.
+path <- '/home/otavio/Projects/Miller_et_al_2024_gengivitis/Analysis/' #diretorio de analise
+knitr::opts_chunk$set(
+  collapse = TRUE, 
+  echo=TRUE,
+  comment="#>", 
+  message=FALSE,
+  warning=FALSE,
+	fig.align="center",
+  fig.width=15,
+  fig.height=15,
+  dpi=300)
+knitr::opts_knit$set(root.dir = path)
+```
+
+# 0 - Prep
+Aqui vai uma breve descrição do projeto. Exemplo abaixo:
+
+Data for this analysis is from the project 'Proteomics and Metagenomics for Identification and Characterization of COVID-19 Biomarkers', ethics approval 4.355.906, Hospital de Clínicas de Porto Alegre (HCPA). The bioinformatics analyses were performed in the Bioinformatics Core of HCPA. This document presents the microbiome analysis workflow for this project.
+
+In this analysis we include 79 nasal and oropharynx swabs from HCPA biobank, collected to perform rt-qPCR for SARS-CoV-2 detection. The samples were selected using COVID-19 severity class (WHO, 2020), as follows: Group 1 (n = 22): positive rt-qPCR for SARS-CoV-2 - COVID-19 - moderate; Group 2 (n = 19, control group): negative rt-qPCR for SARS-CoV-2 (confirmed with a second test), previously classified as moderate COVID-19 by the physician; Group 3 (n = 20): positive rt-qPCR for SARS-CoV-2 - COVID-19 - severe/critical; Group 4 (n = 18, control group): asymptomatic, highly exposed inpatients and healthcare workers, who tested negative by rt-qPCR for SARS-CoV-2 screening. 
+
+# Download main data
+```{r download_main_data, eval=FALSE, echo=FALSE}
+### setting up the ASV data to match the formating of the initial ASV based analysis
+download.file('caminho para o repositorio' ,sep = '/')
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+**nome_RAW.RData** contains the phyloseq objects that is used for all subsequent analysis and with this the whole analysis can be easily replicated
+
+# Libraries
+```{r libraries, eval=TRUE, echo=FALSE}
+library(gtsummary)
+library(writexl)
+library(dplyr)
+library(phyloseq)
+library(nlme)
+library(vegan)
+library(compositions)
+library(ggplot2)
+library(lme4)
+library(reshape2) 
+library(vegan)
+library(ade4)
+library(plotly)
+library(pracma) 
+library(DESeq2) 
+library(fpc) 
+library(tidyverse)
+library(purrr)
+library(cluster)
+library(RColorBrewer)
+library(ape)
+library(gplots)
+library(RColorBrewer)
+library(pheatmap)
+library(reticulate)
+library(Maaslin2)
+library(ggpicrust2)
+library(microbiome)
+library(file2meco)
+library(microbiomeutilities)
+library(gridExtra)
+library(GGally)
+```
+
+# Descriptive data
+```{r desc_data, eval=TRUE, echo=FALSE}
+path <- '/home/otavio/Projects/Miller_et_al_2024_gengivitis/Analysis/'
+overview = paste(path,"/overview/",sep = "")
+dir.create(overview)
+
+ps.0 <- readRDS("ps.dna.rds")
+ps.0
+
+#Removendo as amostras "controle" que não possuem uso nesta análise
+ps = subset_samples(ps.0, sampleID != "H16" & sampleID != "H17")
+ps
+
+#Importando metadados
+samdf <- microbiome::meta(ps)
+
+# Tratando as variáveis de pool
+# Calcular a média para as variáveis numéricas e criar novas colunas
+samdf <- samdf %>%
+  mutate(
+    PPD_mean = rowMeans(select(., starts_with("PPD.Site.")), na.rm = TRUE),
+    CAL_mean = rowMeans(select(., starts_with("CAL.Site.")), na.rm = TRUE)
+  )
+
+# Função para calcular a categoria "maioria"
+majority_vote <- function(x) {
+  if (sum(x == "presence", na.rm = TRUE) >= sum(x == "absence", na.rm = TRUE)) {
+    return("presence")
+  } else {
+    return("absence")
+  }
+}
+
+# Aplicar a função de maioria para cada variável categórica e criar novas colunas
+samdf <- samdf %>%
+  mutate(
+    VPI_Site_majority = apply(select(., starts_with("VPI.Site.")), 1, majority_vote),
+    MBI_Site_majority = apply(select(., starts_with("MBI.Site.")), 1, majority_vote),
+    BoP_Site_majority = apply(select(., starts_with("BoP.Site.")), 1, majority_vote)
+  )
+
+#Salvando a tabela de metadados ajustada
+FileName <- paste(overview,"/ajusted_metadata.rds", sep = "")
+saveRDS(samdf, FileName)
+
+#Ordenando os dados pelo patientID e Exam
+samdf_ordered <- samdf %>%
+  arrange(patientID, Exam)
+
+# Renomeando a coluna Exam
+samdf_ordered$Exam <- paste0("Exam ", samdf_ordered$Exam)
+
+#Criando um vetor com a nova ordem de sampleID
+ordered_samples <- rownames(samdf_ordered)
+
+# Converter 'Exam' em fator e garantir que o nível 1 seja o de referência
+samdf_ordered$Exam <- factor(samdf_ordered$Exam, levels = c("Exam 1", "Exam 2", "Exam 3"))
+
+# Converter 'sample.type' em fator e garantir que 'health' seja o nível de referência
+samdf_ordered$sample.type <- factor(samdf_ordered$sample.type, levels = c("health", "disease"))
+
+# Converter 'patientID' em fator
+samdf_ordered$patientID <- factor(samdf_ordered$patientID)
+
+# Extraindo a tabela de asvs
+otu_table <- as.data.frame(otu_table(ps))
+
+# Reorganizando a asv_table de acordo com a nova ordem
+otu_table_ordered <- otu_table[ordered_samples, ]
+
+# Criando um novo objeto phyloseq com os dados reorganizados
+ps_ordered <- phyloseq(otu_table(otu_table_ordered, taxa_are_rows = FALSE),
+                           sample_data(samdf_ordered),
+                           tax_table(ps),
+                           refseq(ps))
+ps_ordered
+
+# Agora o objeto phyloseq está reorganizado temporalmente por patientID e Exam
+saveRDS(ps_ordered, "ps_ordered.rds")
+
+#Extraindo a tabela de metadados
+metadata <- microbiome::meta(ps_ordered)
+
+# Criar tabela sumarizada
+summary_table <- metadata %>%
+  select(sample.type, Exam, Age, Sex, PPD_mean, CAL_mean, VPI_Site_majority, 
+         MBI_Site_majority, BoP_Site_majority) %>%
+  tbl_summary(
+    by = Exam, # Comparação pré e pós tratamento
+    statistic = list(all_continuous() ~ "{mean} ({sd})", 
+                     all_categorical() ~ "{n} / {N} ({p}%)"),
+    label = list(sample.type ~ "Sample type (n)", Age ~ "Age (years)", 
+                 Sex ~ "Sex", PPD_mean ~ "PPD mean (Mean/SD)", 
+                 CAL_mean ~ "CAL mean (Mean/SD)", VPI_Site_majority ~ "VPI", 
+                 MBI_Site_majority ~ "MBI", BoP_Site_majority ~ "BoP"),
+    missing = "no"
+  ) %>%
+  add_p() %>% # Adicionar p-valor para teste estatístico entre os grupos
+  modify_header(label = "**Variable**") %>%
+  bold_labels()
+
+# Se quiser exportar para um arquivo Excel
+summary_table_df <- as_tibble(summary_table$table_body)
+FileName <- paste(overview,"/summary_statistics.xlsx", sep = "")
+write_xlsx(summary_table_df,FileName)
+
+# Exibir tabela no RMarkdown
+summary_table
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+
+## Checking variables normality
+```{r normality, eval=T, echo=F}
+path <- '/home/otavio/Projects/Miller_et_al_2024_gengivitis/Analysis/'
+overview = paste(path,"/overview/",sep = "")
+
+ps <- readRDS("ps_ordered.rds")
+
+metadata <- microbiome::meta(ps)
+
+# Supondo que 'dados' seja o seu dataframe contendo as variáveis de interesse
+# Substitua 'dados' pelo nome do seu dataframe
+
+# Selecionar as variáveis contínuas que deseja avaliar
+variaveis_continuas <- c("PPD_mean", "CAL_mean") # Substitua pelos nomes das suas variáveis
+
+# Função para aplicar o teste de Shapiro-Wilk e gerar histogramas
+avaliar_normalidade <- function(df, variaveis) {
+  resultados_shapiro <- list()
+  graficos <- list()
+  
+  for (var in variaveis) {
+    # Remover NA's da variável
+    dados_var <- na.omit(df[[var]])
+    
+    # Aplicar o teste de Shapiro-Wilk
+    shapiro_result <- shapiro.test(dados_var)
+    resultados_shapiro[[var]] <- shapiro_result
+    
+    # Gerar histograma com curva de densidade
+    p <- ggplot(df, aes_string(x = var)) +
+      geom_histogram(aes(y = ..density..), binwidth = 1, fill = "lightblue", color = "black") +
+      geom_density(color = "red", size = 1) +
+      labs(title = paste("Histogram of", var),
+           subtitle = paste("p-value of Shapiro-Wilk test:", round(shapiro_result$p.value, 4)),
+           x = var, y = "Density") +
+      theme_minimal()
+    
+    graficos[[var]] <- p
+  }
+  
+  # Exibir resultados do teste de Shapiro-Wilk
+  for (var in variaveis) {
+    cat("Variable:", var, "\n")
+    print(resultados_shapiro[[var]])
+    cat("\n")
+  }
+  
+  # Exibir histogramas
+  do.call(grid.arrange, c(graficos, ncol = 2))
+}
+
+# Aplicar a função ao seu dataframe e variáveis selecionadas
+avaliar_normalidade(metadata, variaveis_continuas)
+
+# clean environment
+rm(list = ls(all = TRUE))
+
+#Em caso de variáveis não normais, de maneira geral opta-se por análises estatísticas que não tenham como requisito a normalidade do dado, mesmo que existam variáveis com distribuição normal dentre as variáveis. Também é importante atentar para a validação das modelagens (normalidade dos resíduos).
+```
+
+## Autocorrelation
+A estrutura deste estudo é um pouco mais complexa do que um estudo longitudinal típico, porque cada paciente (representado pela variável patientID) possui amostras de dois estados de saúde diferentes (health e disease) em todos os três timepoints (Exam). Isso cria uma situação em que as amostras estão correlacionadas tanto dentro de cada paciente ao longo do tempo quanto dentro de cada estado de saúde para o mesmo paciente.
+
+Estrutura do Estudo:
+Timepoints (Exam): Três pontos no tempo.
+PatientID: Cada paciente tem múltiplas amostras em cada timepoint.
+Sample.type (health/disease): Cada paciente tem amostras que são classificadas como health ou disease em cada timepoint.
+Dessa forma, você tem uma estrutura aninhada, onde as amostras estão correlacionadas tanto dentro dos pacientes quanto dentro de cada estado de saúde (health ou disease) para esses pacientes. Esse tipo de estrutura requer uma abordagem mais robusta para capturar corretamente essas correlações e efeitos.
+
+Proposta de Modelagem
+A abordagem ideal deve considerar:
+
+Correlações dentro do paciente ao longo do tempo (efeito aleatório para patientID).
+Correlações dentro do estado de saúde (health ou disease) de um mesmo paciente.
+Efeito do tempo (Exam) e da condição de saúde (sample.type) como variáveis fixas.
+Para capturar essas características, um modelo linear misto com efeitos cruzados parece ser a melhor escolha. O modelo deve incluir:
+
+Efeito aleatório para patientID: para capturar as correlações dentro dos pacientes ao longo dos timepoints.
+Efeito aleatório para sample.type dentro de patientID: para capturar a variação dentro dos estados de saúde (health/disease) para cada paciente.
+Efeitos fixos de Exam e sample.type para testar as diferenças entre os estados de saúde ao longo do tempo.
+
+## Autocorrelation
+```{r autocorr, eval=T, echo=F}
+set.seed(123)
+#Criando o diretório
+path <- '/home/otavio/Projects/Miller_et_al_2024_gengivitis/Analysis/'
+autocorr = paste(path,"/autocorrelation/",sep = "")
+dir.create(autocorr)
+
+#importando o objeto phyloseq
+ps <- readRDS("ps0.dna.rds") #Para adiv
+ps1 <- readRDS("ps1.dna.rds") #Para PCA
+
+#Definindo a paleta de cores para a variável principal
+palette <- c("magenta", "darkgreen")
+
+#Extraindo os dados do objeto phyloseq e a tabela de metadados
+seq_counts <- as.data.frame(t(otu_table(ps1)))
+samdf <- microbiome::meta(ps)
+
+# Abordagem para ordenação por PCA com Dados Composicionais: Transformações de Razão Logarítmica
+# Razão logarítmica
+log_rats <- data.frame(compositions::ilr(t(seq_counts)))
+
+# E altere o comando para ser o mesmo.
+lograt_pca <- prcomp(log_rats)
+lograt_variances<-lograt_pca$sdev^2/sum(lograt_pca$sdev^2)
+
+#Construindo o df para o pca
+pca_lograt_frame<-data.frame(lograt_pca$x,
+                          sample.type=cbind(as.character(samdf$sample.type)),
+                          Exam=cbind(as.character(samdf$Exam)),
+                          patientID=cbind(as.character(samdf$patientID)))
+
+#Gerando o plot
+lrpca <- ggplot(pca_lograt_frame) +
+  geom_polygon(aes(x = PC1, y = PC2, group = patientID, fill = patientID), alpha = 0.3) +
+  geom_point(aes(x = PC1, y = PC2, col = sample.type, shape = as.factor(Exam)), size = 3) +
+  ylab(paste0('PC2 ', round(lograt_variances[2] * 100, 2), '%')) +
+  xlab(paste0('PC1 ', round(lograt_variances[1] * 100, 2), '%')) +
+  scale_color_manual(values = palette, name = 'Sample Type') +
+  scale_shape_manual(values = c(16, 17, 18), name = 'Exam') +
+  ggtitle('Log-Ratio PCA Ordination - Sample Type') +
+  coord_fixed(ratio = lograt_variances[2] / lograt_variances[1]) +
+  theme_bw()
+
+lrpca
+
+# Ajuste do modelo linear misto para os componentes principais do PCA
+# Assumindo que os componentes principais do PCA já estão calculados e incluídos no dataframe `pca_data`
+# onde PC1 e PC2 são as colunas correspondentes aos dois primeiros componentes principais
+
+#Construindo o df para o modelo
+model_lograt_frame<-data.frame(
+  lograt_pca$x,
+  sample.type = as.factor(samdf$sample.type),  # Preserva o fator
+  Exam = as.factor(samdf$Exam),               # Preserva o fator
+  patientID = as.factor(samdf$patientID))      # Preserva o fator
+
+# Modelo linear misto para o primeiro componente principal (PC1)
+model_PC1 <- lme(
+  fixed = PC1 ~ sample.type * Exam,
+  random = ~ Exam | patientID,
+  correlation = corAR1(form = ~ 1 | patientID),
+  data = model_lograt_frame,
+  control = lmeControl(maxIter = 100, msMaxIter = 100, opt = "optim") # Ajuste de iterações e otimizador
+)
+
+summary(model_PC1)
+
+# Usando a Alpha diversidade 
+df.adiv <- cbind(data.frame(sample_data(ps)), estimate_richness(ps,measures = "Shannon"))
+
+# Modelo linear misto com estrutura de autocorrelação
+model <- lme(fixed = Shannon ~ sample.type*Exam,
+             random = ~ 1 | patientID,
+             correlation = corAR1(form = ~ 1 | patientID),
+             data = df.adiv)
+
+summary(model)
+
+# Ajustar o modelo com estrutura de correlação entre sample.type para cada patientID
+model_cross_PC1 <- lme(
+  fixed = PC1 ~ Exam * sample.type,       # Efeitos fixos de Exam e sample.type
+  random = ~ 1 | patientID/sample.type, # Correlaciona sample.type dentro de cada paciente
+  correlation = corCompSymm(form = ~ 1 | patientID/sample.type), # Correlação composta simétrica para correlação entre states
+  data = pca_lograt_frame
+)
+
+summary(model_cross_PC1)
+
+model_cross_shannon <- lme(
+  fixed = Shannon ~ Exam * sample.type,       # Efeitos fixos de Exam e sample.type
+ random = ~ 1 | patientID/sample.type, # Correlaciona sample.type dentro de cada paciente
+  correlation = corCompSymm(form = ~ 1 | patientID/sample.type), # Correlação composta simétrica para correlação entre states
+  data = df.adiv
+)
+
+summary(model_cross_shannon)
+
+#Exportando a figura
+FileName <- paste(autocorr,"/autocorr_lrpca.pdf", sep = "")
+ggsave(FileName, plot = lrpca, width = 180, height = 170, units = "mm", dpi = 300)
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+Aqui estamos avaliando somente as estruturas de autocorrelação. 
+As análises estatísticas definitivas de alfa e beta diversidade serão realizadas 
+nos capítulos posteriores.
+
+Modelo 1: PCA (PC1) com AR(1)
+Resumo
+Correlação alta (Corr>0.95) entre os níveis de Exam, indicando que as medidas de PC1 
+dentro de um paciente estão fortemente relacionadas.
+
+Estrutura de correlação AR(1):
+Φ=−0.443: Correlação negativa moderada, indicando que observações consecutivas de PC1 
+tendem a variar inversamente.
+Ajuste do modelo:
+AIC=177.78,BIC=193.67.
+
+Modelo 2: Shannon com AR(1)
+Resumo
+Estrutura de correlação AR(1):
+Φ=0.057: Correlação quase nula, sugerindo independência entre medições consecutivas de Shannon.
+Ajuste do modelo:
+AIC=71.88,BIC=82.10.
+
+Modelo 3: PCA (PC1) com correlação composta simétrica
+Resumo
+Estrutura de correlação composta simétrica:
+ρ=−0.0002: Correlação praticamente nula entre health e disease dentro de um mesmo paciente.
+Ajuste do modelo:
+AIC=170.62,BIC=181.97.
+
+Modelo 4: Shannon com correlação composta simétrica
+Estrutura de correlação composta simétrica:
+ρ=−0.145: Correlação negativa fraca entre health e disease dentro de um mesmo paciente.
+Ajuste do modelo:
+AIC=73.91,BIC=85.27.
+
+Comparação Geral
+Autocorrelação temporal (AR(1)):
+Para PCA (Modelo 1), a autocorrelação negativa moderada (Φ=−0.443) é relevante, 
+indicando variações inversas entre medições consecutivas.
+Para Shannon (Modelo 2), a autocorrelação é insignificante (Φ=0.057), 
+sugerindo que o tempo tem pouco impacto nas medições.
+Correlação composta simétrica (ρ):
+
+Para PCA (Modelo 3), ρ é praticamente nulo (ρ=−0.0002).
+Para Shannon (Modelo 4), ρ é negativo fraco (ρ=−0.145).
+
+Ajustes dos modelos (AIC/BIC):
+
+Recomendações
+Para PCA (PC1), a estrutura AR(1) (Modelo 1) é mais apropriada, 
+pois a autocorrelação temporal é relevante.
+Para Shannon, a estrutura composta simétrica (Modelo 4) 
+captura uma fraca correlação entre health e disease, sendo preferível ao modelo AR(1).
+
+# Data preparation
+```{r data_prep, eval=T, echo=F}
+#Escolha o objeto phyloseq de trabalho
+ps.dna <- readRDS("ps_ordered.rds")
+ps.dna
+
+#Ranks disponíveis no dataset
+rank_names(ps.dna)
+
+#Número de features para cada filo
+table(tax_table(ps.dna)[, "Phylum"], exclude = NULL)
+
+#Filtrando features não identificadas em nível de filo. 
+#Dependendo o banco de dados/algoritmo é importante verificar como features 
+#não anotadas ficam descritas
+ps0.dna <- subset_taxa(ps.dna, !is.na(Phylum) 
+                       & !Phylum %in% c("", "uncharacterized", "NA"))
+ps0.dna
+saveRDS(ps0.dna, "ps0.dna.rds")
+
+#Aglomeração taxonômica
+ps0.dna.genus <- tax_glom(ps0.dna, "Genus", NArm = FALSE) #Gênero
+ps0.dna.genus
+ps0.dna.family <- tax_glom(ps0.dna, "Family", NArm = FALSE) #Family
+ps0.dna.family
+ps0.dna.phy <- tax_glom(ps0.dna, "Phylum", NArm = FALSE) #Phylo
+ps0.dna.phy
+
+# Computando a prevalência para cada feature
+prevdf = apply(X = otu_table(ps0.dna),
+               MARGIN = ifelse(taxa_are_rows(ps0.dna), yes = 1, no = 2),
+               FUN = function(x){sum(x > 0)})
+
+# Adicionando taxonomia e contagem total de reads
+prevdf = data.frame(Prevalence = prevdf,
+                    TotalAbundance = taxa_sums(ps0.dna),
+                    tax_table(ps0.dna))
+
+prevdf1 = subset(prevdf, Phylum %in% get_taxa_unique(ps0.dna, "Phylum"))
+
+# Define o ponto de corte de prevalência com relação ao total de amostras 
+prevalenceThreshold = 0.05 * nsamples(ps0.dna)
+prevalenceThreshold
+
+# Executa o filtro de prevalência
+keepTaxa = rownames(prevdf1)[(prevdf1$Prevalence >= prevalenceThreshold)]
+ps1.dna = prune_taxa(keepTaxa, ps0.dna)
+ps1.dna
+
+#Salvando os objetos
+saveRDS(ps1.dna, file = "ps1.dna.rds")
+
+#Filtrando o objeto aglomerado em nível de gênero
+# Computando a prevalência para cada feature
+prevdf = apply(X = otu_table(ps0.dna.genus),
+               MARGIN = ifelse(taxa_are_rows(ps0.dna.genus), yes = 1, no = 2),
+               FUN = function(x){sum(x > 0)})
+
+# Adicionando taxonomia e contagem total de reads
+prevdf = data.frame(Prevalence = prevdf,
+                    TotalAbundance = taxa_sums(ps0.dna.genus),
+                    tax_table(ps0.dna.genus))
+
+prevdf1 = subset(prevdf, Genus %in% get_taxa_unique(ps0.dna, "Genus"))
+
+# Executa o filtro de prevalência
+keepTaxa = rownames(prevdf1)[(prevdf1$Prevalence >= prevalenceThreshold)]
+ps1.dna.genus = prune_taxa(keepTaxa, ps0.dna.genus)
+ps1.dna.genus
+
+#Salvando os objetos
+saveRDS(ps1.dna.genus, file = "ps1.dna.genus.rds")
+
+#Filtrando o objeto aglomerado em nível de família
+# Computando a prevalência para cada feature
+prevdf = apply(X = otu_table(ps0.dna.family),
+               MARGIN = ifelse(taxa_are_rows(ps0.dna.family), yes = 1, no = 2),
+               FUN = function(x){sum(x > 0)})
+
+# Adicionando taxonomia e contagem total de reads
+prevdf = data.frame(Prevalence = prevdf,
+                    TotalAbundance = taxa_sums(ps0.dna.family),
+                    tax_table(ps0.dna.family))
+
+prevdf1 = subset(prevdf, Family %in% get_taxa_unique(ps0.dna, "Family"))
+
+# Executa o filtro de prevalência
+keepTaxa = rownames(prevdf1)[(prevdf1$Prevalence >= prevalenceThreshold)]
+ps1.dna.family = prune_taxa(keepTaxa, ps0.dna.family)
+ps1.dna.family
+
+#Salvando os objetos
+saveRDS(ps1.dna.family, file = "ps1.dna.family.rds")
+
+#Filtrando o objeto aglomerado em nível de filo
+# Computando a prevalência para cada feature
+prevdf = apply(X = otu_table(ps0.dna.phy),
+               MARGIN = ifelse(taxa_are_rows(ps0.dna.phy), yes = 1, no = 2),
+               FUN = function(x){sum(x > 0)})
+
+# Adicionando taxonomia e contagem total de reads
+prevdf = data.frame(Prevalence = prevdf,
+                    TotalAbundance = taxa_sums(ps0.dna.phy),
+                    tax_table(ps0.dna.phy))
+
+prevdf1 = subset(prevdf, Phylum %in% get_taxa_unique(ps0.dna, "Phylum"))
+
+# Executa o filtro de prevalência
+keepTaxa = rownames(prevdf1)[(prevdf1$Prevalence >= prevalenceThreshold)]
+ps1.dna.phy = prune_taxa(keepTaxa, ps0.dna.phy)
+ps1.dna.phy
+
+#Salvando os objetos
+saveRDS(ps1.dna.phy, file = "ps1.dna.phy.rds")
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+
+## Checking outliers
+### Outliers by relative abundance
+```{r outliers_barchart, eval=T, echo=F}
+# Definir o caminho para salvar as figuras
+path <- '/home/otavio/Projects/Peruzzo_et_al_2024/Analysis/'
+overview <- paste(path, "/overview/", sep = "")
+
+# Carregar os objetos phyloseq
+ps_ASV <- readRDS("ps1.dna.rds")
+ps_phylum <- readRDS("ps1.dna.phy.rds")
+ps_family <- readRDS("ps1.dna.family.rds")
+ps_genus <- readRDS("ps1.dna.genus.rds")
+
+ps_ASV_ra <- transform_sample_counts(ps_ASV, function(x) x / sum(x))
+ps_phylum_ra <- transform_sample_counts(ps_phylum, function(x) x / sum(x))
+ps_family_ra <- transform_sample_counts(ps_family, function(x) x / sum(x))
+ps_genus_ra <- transform_sample_counts(ps_genus, function(x) x / sum(x))
+
+# Função para criar e salvar barcharts
+create_barchart <- function(ps_obj, title, file_prefix) {
+  # Obter abundâncias absolutas ou relativas
+  abundance_df <- as.data.frame(otu_table(ps_obj))
+  abundance_df <- abundance_df %>%
+    rownames_to_column("SampleID") %>%
+    pivot_longer(-SampleID, names_to = "Taxa", values_to = "Abundance")
+  
+  # Criar o barchart
+  plot <- ggplot(abundance_df, aes(x = SampleID, y = Abundance, fill = Taxa)) +
+    geom_bar(stat = "identity", position = "stack") +
+    labs(x = "Sample", y = "Abundance", title = title) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+          plot.title = element_text(hjust = 0.5),
+          legend.position = "none")
+  
+  # Salvar a figura em PDF e PNG
+  FileName_PDF <- paste(overview, paste0(file_prefix, ".pdf"), sep = "")
+  FileName_PNG <- paste(overview, paste0(file_prefix, ".png"), sep = "")
+  ggsave(FileName_PDF, plot = plot, width = 180, height = 170, units = "mm", dpi = 300, limitsize = F)
+  ggsave(FileName_PNG, plot = plot, width = 180, height = 170, units = "mm", dpi = 300, limitsize = F)
+  
+  return(plot)
+}
+
+# Criar barcharts
+
+# 1. Abundâncias em nível de filo
+F1 <- create_barchart(ps_phylum_ra, 
+                      title = "Relative Abundances by Phylum", 
+                      file_prefix = "Relative_Abundance_Phylum")
+
+# 2. Abundâncias em nível de família
+F2 <- create_barchart(ps_family_ra, 
+                      title = "Relative Abundances by Family", 
+                      file_prefix = "Relative_Abundance_Family")
+
+# 3. Abundâncias em nível de gênero
+F3 <- create_barchart(ps_genus_ra, 
+                      title = "Relative Abundances by Genus", 
+                      file_prefix = "Relative_Abundance_Genus")
+
+# 4. Abundâncias em nível de ASV
+F4 <- create_barchart(ps_ASV_ra, 
+                      title = "Relative Abundances by ASV", 
+                      file_prefix = "Relative_Abundance_ASV")
+
+# Exibir as figuras (opcional)
+print(F1)
+print(F2)
+print(F3)
+print(F4)
+
+
+```
+
+### Outliers by sample size and composition
+```{r outliers_barchart_size, eval=T, echo=F}
+# Definir o caminho para salvar as figuras
+path <- '/home/otavio/Projects/Peruzzo_et_al_2024/Analysis/'
+overview <- paste(path, "/overview/", sep = "")
+
+# Carregar os objetos phyloseq
+ps_phylum <- readRDS("ps1.dna.phy.rds")
+ps_family <- readRDS("ps1.dna.family.rds")
+ps_genus <- readRDS("ps1.dna.genus.rds")
+
+# Função para criar e salvar barcharts
+create_barchart <- function(ps_obj, title, file_prefix) {
+  # Obter abundâncias absolutas ou relativas
+  abundance_df <- as.data.frame(otu_table(ps_obj))
+  abundance_df <- abundance_df %>%
+    rownames_to_column("SampleID") %>%
+    pivot_longer(-SampleID, names_to = "Taxa", values_to = "Abundance")
+  
+  # Criar o barchart
+  plot <- ggplot(abundance_df, aes(x = SampleID, y = Abundance, fill = Taxa)) +
+    geom_bar(stat = "identity", position = "stack") +
+    labs(x = "Sample", y = "Abundance", title = title) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+          plot.title = element_text(hjust = 0.5),
+          legend.position = "none")
+  
+  # Salvar a figura em PDF e PNG
+  FileName_PDF <- paste(overview, paste0(file_prefix, ".pdf"), sep = "")
+  FileName_PNG <- paste(overview, paste0(file_prefix, ".png"), sep = "")
+  ggsave(FileName_PDF, plot = plot, width = 180, height = 170, units = "mm", dpi = 300)
+  ggsave(FileName_PNG, plot = plot, width = 180, height = 170, units = "mm", dpi = 300)
+  
+  return(plot)
+}
+
+# Criar barcharts
+
+# 1. Abundâncias em nível de filo
+F1 <- create_barchart(ps_phylum, 
+                      title = "Abundances by Phylum", 
+                      file_prefix = "Abundance_Phylum")
+
+# 2. Abundâncias em nível de família
+F2 <- create_barchart(ps_family, 
+                      title = "Abundances by Family", 
+                      file_prefix = "Abundance_Family")
+
+# 3. Abundâncias em nível de gênero
+F3 <- create_barchart(ps_genus, 
+                      title = "Abundances by Genus", 
+                      file_prefix = "Abundance_Genus")
+
+# Exibir as figuras (opcional)
+print(F1)
+print(F2)
+print(F3)
+```
+
+### Multivariate outliers
+```{r outliers_PCA, eval=T, echo=F}
+# Definir o caminho para salvar as figuras
+path <- '/home/otavio/Projects/Peruzzo_et_al_2024/Analysis/'
+overview <- paste(path, "/overview/", sep = "")
+
+#importando o objeto phyloseq
+ps <- readRDS("ps1.dna.rds") #Para PCA
+
+#Definindo a paleta de cores para a variável principal
+palette <- c("magenta", "darkgreen")
+
+#Extraindo os dados do objeto phyloseq e a tabela de metadados
+seq_counts <- as.data.frame(t(otu_table(ps)))
+samdf <- microbiome::meta(ps)
+
+# Abordagem para ordenação por PCA com Dados Composicionais: Transformações de Razão Logarítmica
+# Razão logarítmica
+log_rats <- data.frame(compositions::ilr(t(seq_counts)))
+
+# E altere o comando para ser o mesmo.
+lograt_pca <- prcomp(log_rats)
+lograt_variances<-lograt_pca$sdev^2/sum(lograt_pca$sdev^2)
+
+#Construindo o df para o pca
+pca_lograt_frame<-data.frame(lograt_pca$x,
+                          Group=cbind(as.character(samdf$Group)))
+
+#Gerando o plot
+lrpca <- ggplot(pca_lograt_frame) +
+  geom_point(aes(x = PC1, y = PC2, col = Group)) +
+  ylab(paste0('PC2 ', round(lograt_variances[2] * 100, 2), '%')) +
+  xlab(paste0('PC1 ', round(lograt_variances[1] * 100, 2), '%')) +
+  scale_color_manual(values = palette, name = 'Group') +
+  ggtitle('Log-Ratio PCA Ordination - Group') +
+  coord_fixed(ratio = lograt_variances[2] / lograt_variances[1]) +
+  theme_bw()
+
+lrpca
+
+#Exportando a figura
+FileName <- paste(overview,"/outliers_lrpca.pdf", sep = "")
+ggsave(FileName, plot = lrpca, width = 180, height = 170, units = "mm", dpi = 300)
+
+FileName <- paste(overview,"/outliers_lrpca.png", sep = "")
+ggsave(FileName, plot = lrpca, width = 180, height = 170, units = "mm", dpi = 300)
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+
+### Removing outliers
+
+```{r outliers_drop, eval=F, echo=F}
+# Definir os nomes das amostras a serem removidas
+amostras_remover <- c("C19", "C24")
+
+# Lista dos arquivos originais
+arquivos_originais <- c("ps0.dna.rds",  "ps1.dna.rds", "ps1.dna.phy.rds", "ps1.dna.family.rds", "ps1.dna.genus.rds")
+
+# Função para remover amostras e salvar novo objeto
+remover_amostras_e_salvar <- function(arquivo) {
+  # Carregar o objeto phyloseq
+  ps_obj <- readRDS(arquivo)
+  
+  # Remover as amostras especificadas
+  ps_obj_no <- prune_samples(!(sample_names(ps_obj) %in% amostras_remover), ps_obj)
+  
+  # Definir o novo nome do arquivo
+  novo_nome <- sub(".rds$", ".no.rds", arquivo)
+  
+  # Salvar o novo objeto
+  saveRDS(ps_obj_no, file = novo_nome)
+  
+}
+
+# Aplicar a função a cada arquivo
+lapply(arquivos_originais, remover_amostras_e_salvar)
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+
+
+# Microbiome overview
+## Ajusting for calculations and tables
+```{r microbiome_overview, eval=T, echo=F}
+path <- '/home/otavio/Projects/Miller_et_al_2024_gengivitis/Analysis/'
+overview = paste(path,"/overview/",sep = "")
+
+ps0.dna <- readRDS("ps0.dna.rds")
+
+#Aglomerações
+ps.dna.phy <- tax_glom(ps0.dna, "Phylum", NArm = TRUE)
+ps.dna.family <- tax_glom(ps0.dna, "Family", NArm = TRUE)
+ps.dna.genus <- tax_glom(ps0.dna, "Genus", NArm = TRUE)
+
+#ASV level
+ps.ra <- transform_sample_counts(ps0.dna, function(x) x/sum(x))
+
+#Phylum level
+taxa_names(ps.dna.phy) <- tax_table(ps.dna.phy)[,2]
+ps.phy.ra <- transform_sample_counts(ps.dna.phy, function(x) x/sum(x))
+
+#Family level
+taxa_names(ps.dna.family) <- tax_table(ps.dna.family)[,5]
+ps.family.ra <- transform_sample_counts(ps.dna.family, function(x) x/sum(x))
+
+#Genus level
+#taxa_names(ps.dna.genus) <- tax_table(ps.dna.genus)[,6]
+ps.genus.ra <- transform_sample_counts(ps.dna.genus, function(x) x/sum(x))
+genus.melt <- psmelt(ps.genus.ra)
+```
+
+### Dominant taxa
+#### Tables
+The distribution of the reads are here summarized on phylum, family and genus level. 
+```{r ov_microbiome_tables, eval=T, echo=F}
+library(kableExtra)
+
+df2 <- data.frame(tax_table(ps.dna.phy), taxprc = 100*taxa_sums(ps.phy.ra)/length(sample_names(ps.phy.ra)))
+df3 <- data.frame(tax_table(ps.dna.family), taxprc = 100*taxa_sums(ps.family.ra)/length(sample_names(ps.family.ra)))
+df4 <- data.frame(tax_table(ps.dna.genus),taxprc = 100*taxa_sums(ps.genus.ra)/length(sample_names(ps.genus.ra)))
+df5 <- data.frame(tax_table(ps0.dna),taxprc = 100*taxa_sums(ps.ra)/length(sample_names(ps.ra)))
+
+df.count <- data.frame(Included = c("All", "> 0.01%", "> 0.1%","> 1%"),
+                          Phylum = c(nrow(df2),sum(df2$taxprc > 0.01),sum(df2$taxprc > 0.1),sum(df2$taxprc > 1)),
+                          Family = c(nrow(df3),sum(df3$taxprc > 0.01),sum(df3$taxprc > 0.1),sum(df3$taxprc > 1)),
+                          Genus = c(nrow(df4),sum(df4$taxprc > 0.01),sum(df4$taxprc > 0.1),sum(df4$taxprc > 1)),
+                          ASV = c(nrow(df5),sum(df5$taxprc > 0.01),sum(df5$taxprc > 0.1),sum(df5$taxprc > 1)))
+
+# Count of ASV and taxa in samples
+kable(df.count, row.names = F,digits = 1, caption = 'Abundance of phyla, family, genera and ASV in microbiome samples')%>% 
+  kable_classic(full_width = F, position = "left")
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(overview,"/Abundance of phyla, family, genera and ASV in microbiome samples.xlsx", sep = "")
+write_xlsx(df.count,FileName)
+
+# Top 6 dominating phyla (prc abundance)
+kable(head(df2[order(df2$taxprc,decreasing = T),c("Kingdom","Phylum","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to phylum',col.names = c("Kingdom","Phylum","Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(overview,"/Average abundance according to phylum.xlsx", sep = "")
+write_xlsx(df2,FileName)
+
+# Top 6 dominating family (prc abundance)
+kable(head(df3[order(df3$taxprc,decreasing = T),c("Kingdom","Phylum","Family", "taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to family',col.names = c("Kingdom","Phylum", "Family", "Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(overview,"/Average abundance according to family.xlsx", sep = "")
+write_xlsx(df3,FileName)
+
+# Top 6 dominating (genera prc abundance)
+kable(head(df4[order(df4$taxprc,decreasing = T),c("Kingdom","Phylum","Class","Order","Family","Genus","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to genus',col.names = c("Kingdom","Phylum","Class","Order","Family","Genus","Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(overview,"/Average abundance according to genus.xlsx", sep = "")
+write_xlsx(df4,FileName)
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+
+
+### Distribution of taxa in Health samples
+```{r health_dist1, eval=T, echo=F}
+path <- '/home/otavio/Projects/Miller_et_al_2024_gengivitis/Analysis/'
+over_type_exam = paste(path,"/overview_by_type_and_exam/",sep = "")
+dir.create(over_type_exam)
+
+ps <- readRDS("ps1.dna.rds")
+ps.health <- subset_samples(ps, sample.type=='health')
+
+#Aglomerações
+ps.health.phy <- tax_glom(ps.health, "Phylum", NArm = TRUE)
+ps.health.family <- tax_glom(ps.health, "Family", NArm = TRUE)
+ps.health.genus <- tax_glom(ps.health, "Genus", NArm = TRUE)
+
+#ASV level
+ps.health.ra <- transform_sample_counts(ps.health, function(x) x/sum(x))
+
+#Phylum level
+taxa_names(ps.health.phy) <- tax_table(ps.health.phy)[,2]
+ps.health.phy.ra <- transform_sample_counts(ps.health.phy, function(x) x/sum(x))
+
+#Family level
+taxa_names(ps.health.family) <- tax_table(ps.health.family)[,5]
+ps.health.family.ra <- transform_sample_counts(ps.health.family, function(x) x/sum(x))
+
+#Genus level
+#taxa_names(ps.dna.genus) <- tax_table(ps.dna.genus)[,6]
+ps.health.genus.ra <- transform_sample_counts(ps.health.genus, function(x) x/sum(x))
+ps.health.genus.melt <- psmelt(ps.health.genus.ra)
+
+library(kableExtra)
+
+df2 <- data.frame(tax_table(ps.health.phy), taxprc = 100*taxa_sums(ps.health.phy.ra)/length(sample_names(ps.health.phy.ra)))
+df3 <- data.frame(tax_table(ps.health.family), taxprc = 100*taxa_sums(ps.health.family.ra)/length(sample_names(ps.health.family.ra)))
+df4 <- data.frame(tax_table(ps.health.genus),taxprc = 100*taxa_sums(ps.health.genus.ra)/length(sample_names(ps.health.genus.ra)))
+df5 <- data.frame(tax_table(ps.health),taxprc = 100*taxa_sums(ps.health.ra)/length(sample_names(ps.health.ra)))
+
+df.count <- data.frame(Included = c("All", "> 0.01%", "> 0.1%","> 1%"),
+                          Phylum = c(nrow(df2),sum(df2$taxprc > 0.01),sum(df2$taxprc > 0.1),sum(df2$taxprc > 1)),
+                          Family = c(nrow(df3),sum(df3$taxprc > 0.01),sum(df3$taxprc > 0.1),sum(df3$taxprc > 1)),
+                          Genus = c(nrow(df4),sum(df4$taxprc > 0.01),sum(df4$taxprc > 0.1),sum(df4$taxprc > 1)),
+                          ASV = c(nrow(df5),sum(df5$taxprc > 0.01),sum(df5$taxprc > 0.1),sum(df5$taxprc > 1)))
+
+# Count of ASV and taxa in health samples
+kable(df.count, row.names = F,digits = 1, caption = 'Abundance of phyla, family, genera and ASV in health samples')%>% 
+  kable_classic(full_width = F, position = "left")
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(over_type_exam,"/Abundance of phyla, family, genera and ASV in health samples.xlsx", sep = "")
+write_xlsx(df.count,FileName)
+
+# Top 6 dominating phyla (prc abundance)
+kable(head(df2[order(df2$taxprc,decreasing = T),c("Kingdom","Phylum","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to phylum in health samples',col.names = c("Kingdom","Phylum","Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(over_type_exam,"/Average abundance according to phylum in health samples.xlsx", sep = "")
+write_xlsx(df2,FileName)
+
+# Top 6 dominating family (prc abundance)
+kable(head(df3[order(df3$taxprc,decreasing = T),c("Kingdom","Phylum","Family", "taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to family in health samples',col.names = c("Kingdom","Phylum", "Family", "Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(over_type_exam,"/Average abundance according to family in health samples.xlsx", sep = "")
+write_xlsx(df3,FileName)
+
+# Top 6 dominating (genera prc abundance)
+kable(head(df4[order(df4$taxprc,decreasing = T),c("Kingdom","Phylum","Class","Order","Family","Genus","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to genus in health samples',col.names = c("Kingdom","Phylum","Class","Order","Family","Genus","Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(over_type_exam,"/Average abundance according to genus in health samples.xlsx", sep = "")
+write_xlsx(df4,FileName)
+
+# clean environment
+#rm(list = ls(all = TRUE))
+```
+
+### Distribution of taxa in Disease samples
+```{r health_dist, eval=T, echo=F}
+path <- '/home/otavio/Projects/Miller_et_al_2024_gengivitis/Analysis/'
+over_type_exam = paste(path,"/overview_by_type_and_exam/",sep = "")
+
+ps <- readRDS("ps1.dna.rds")
+ps.dis <- subset_samples(ps, sample.type=='disease')
+
+#Aglomerações
+ps.dis.phy <- tax_glom(ps.dis, "Phylum", NArm = TRUE)
+ps.dis.family <- tax_glom(ps.dis, "Family", NArm = TRUE)
+ps.dis.genus <- tax_glom(ps.dis, "Genus", NArm = TRUE)
+
+#ASV level
+ps.dis.ra <- transform_sample_counts(ps.dis, function(x) x/sum(x))
+
+#Phylum level
+taxa_names(ps.dis.phy) <- tax_table(ps.dis.phy)[,2]
+ps.dis.phy.ra <- transform_sample_counts(ps.dis.phy, function(x) x/sum(x))
+
+#Family level
+taxa_names(ps.dis.family) <- tax_table(ps.dis.family)[,5]
+ps.dis.family.ra <- transform_sample_counts(ps.dis.family, function(x) x/sum(x))
+
+#Genus level
+#taxa_names(ps.dna.genus) <- tax_table(ps.dna.genus)[,6]
+ps.dis.genus.ra <- transform_sample_counts(ps.dis.genus, function(x) x/sum(x))
+ps.dis.genus.melt <- psmelt(ps.dis.genus.ra)
+
+library(kableExtra)
+
+df2 <- data.frame(tax_table(ps.dis.phy), taxprc = 100*taxa_sums(ps.dis.phy.ra)/length(sample_names(ps.dis.phy.ra)))
+df3 <- data.frame(tax_table(ps.dis.family), taxprc = 100*taxa_sums(ps.dis.family.ra)/length(sample_names(ps.dis.family.ra)))
+df4 <- data.frame(tax_table(ps.dis.genus),taxprc = 100*taxa_sums(ps.dis.genus.ra)/length(sample_names(ps.dis.genus.ra)))
+df5 <- data.frame(tax_table(ps.dis),taxprc = 100*taxa_sums(ps.dis.ra)/length(sample_names(ps.dis.ra)))
+
+df.count <- data.frame(Included = c("All", "> 0.01%", "> 0.1%","> 1%"),
+                          Phylum = c(nrow(df2),sum(df2$taxprc > 0.01),sum(df2$taxprc > 0.1),sum(df2$taxprc > 1)),
+                          Family = c(nrow(df3),sum(df3$taxprc > 0.01),sum(df3$taxprc > 0.1),sum(df3$taxprc > 1)),
+                          Genus = c(nrow(df4),sum(df4$taxprc > 0.01),sum(df4$taxprc > 0.1),sum(df4$taxprc > 1)),
+                          ASV = c(nrow(df5),sum(df5$taxprc > 0.01),sum(df5$taxprc > 0.1),sum(df5$taxprc > 1)))
+
+# Count of ASV and taxa in disease samples
+kable(df.count, row.names = F,digits = 1, caption = 'Abundance of phyla, family, genera and ASV in disease samples')%>% 
+  kable_classic(full_width = F, position = "left")
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(over_type_exam,"/Abundance of phyla, family, genera and ASV in disease samples.xlsx", sep = "")
+write_xlsx(df.count,FileName)
+
+# Top 6 dominating phyla (prc abundance)
+kable(head(df2[order(df2$taxprc,decreasing = T),c("Kingdom","Phylum","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to phylum in disease samples',col.names = c("Kingdom","Phylum","Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(over_type_exam,"/Average abundance according to phylum in disease samples.xlsx", sep = "")
+write_xlsx(df2,FileName)
+
+# Top 6 dominating family (prc abundance)
+kable(head(df3[order(df3$taxprc,decreasing = T),c("Kingdom","Phylum","Family", "taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to family in disease samples',col.names = c("Kingdom","Phylum", "Family", "Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(over_type_exam,"/Average abundance according to family in disease samples.xlsx", sep = "")
+write_xlsx(df3,FileName)
+
+# Top 6 dominating (genera prc abundance)
+kable(head(df4[order(df4$taxprc,decreasing = T),c("Kingdom","Phylum","Class","Order","Family","Genus","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to genus in disease samples',col.names = c("Kingdom","Phylum","Class","Order","Family","Genus","Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(over_type_exam,"/Average abundance according to genus in disease samples.xlsx", sep = "")
+write_xlsx(df4,FileName)
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+
+### Health x disease composition per Exam - Phylum level
+```{r health_dis_comp_Phylum, eval=T, echo=F}
+path <- '/home/otavio/Projects/Miller_et_al_2024_gengivitis/Analysis/'
+over_type_exam = paste(path,"/overview_by_type_and_exam/",sep = "")
+
+#Importando o objeto phyloseq aglomerado em gênero
+ps <- readRDS("ps1.dna.phy.rds")
+
+# Transformar abundâncias absolutas em abundâncias relativas
+ps_ra <- transform_sample_counts(ps, function(x) x / sum(x))
+ps_ra_melt <- psmelt(ps_ra)
+
+#Definindo a paleta de cores para a variável principal
+palette <- c("magenta", "darkgreen")
+
+#Legend
+g_legend<-function(a.gplot){ 
+  tmp <- ggplot_gtable(ggplot_build(a.gplot)) 
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box") 
+  legend <- tmp$grobs[[leg]] 
+  return(legend)} 
+mytheme <- theme(axis.title = element_text(size = 10), axis.text = element_text(size = 8)) + theme_bw()
+
+# Subset
+Phylum.summary <- aggregate(Abundance~sample.type+Phylum, data = ps_ra_melt, FUN = mean)
+Phylum.summary.ordered <- Phylum.summary[order(Phylum.summary$Abundance,decreasing = T),]
+
+# Encontrando top10 por Exam
+Phylum.top.1 <- Phylum.summary.ordered$Phylum[Phylum.summary.ordered$sample.type == "health"][1:10]
+Phylum.top.2 <- Phylum.summary.ordered$Phylum[Phylum.summary.ordered$sample.type == "disease"][1:10]
+#Phylum.top.3 <- Phylum.summary.ordered$Phylum[Phylum.summary.ordered$Exam == "Exam 3"][1:10]
+
+# subset 
+top10 <- unique(c(Phylum.top.1,Phylum.top.2))#,Phylum.top.3))
+top10.max <- aggregate(Abundance~Phylum, data = Phylum.summary.ordered[Phylum.summary.ordered$Phylum %in% top10,], max)
+
+Phylum.keep <- top10.max$Phylum[top10.max$Abundance>0.05]
+
+# fig (Boxplot top Phylum por Sample type)
+ps_ra_melt$Abundance_percent <- ifelse(ps_ra_melt$Abundance < 0.001, 0.1,ps_ra_melt$Abundance*100)
+
+F1 <- ggplot(ps_ra_melt[ps_ra_melt$Phylum %in% Phylum.keep,], aes(y = Phylum, x = Abundance_percent)) + 
+  geom_boxplot(position =position_dodge2(reverse = TRUE), aes(color = sample.type), alpha = 0.5) + 
+  geom_boxplot(position =position_dodge2(reverse = TRUE), aes(fill = sample.type), alpha = 0.5, outlier.shape = 21) +
+  facet_wrap(~ Exam, nrow = 1) +
+  scale_fill_manual(values = palette) + 
+  scale_color_manual(values = palette) + 
+  scale_x_log10() +
+  ylab("") +
+  xlab("Abundance (%)") +
+  theme_bw() + theme(axis.title = element_text(size = 10), axis.text.x = element_text(size = 8),legend.position = 'bottom',axis.text.y = element_text(face="italic",size = 8),
+  plot.margin = unit(c(1, 1, 1, 1), "lines")) # Ajuste as margens aqui (topo, direita, baixo, esquerda)
+
+print(F1)
+
+# plot legend
+F1_legend <- g_legend(F1 + geom_boxplot(aes(color=sample.type,fill=sample.type),alpha=0.5)+ 
+  theme_bw() + theme(axis.title = element_text(size = 10), 
+                     axis.text = element_text(size = 8), 
+                     axis.text.x=element_blank(), 
+                     axis.ticks.x=element_blank(), 
+                     legend.position = 'bottom'))
+
+# Save plot
+FileName <- paste(over_type_exam,"/Top Phylum Abundance by Sample Type and Exam.RData", sep = "")
+save(file = FileName,list = c('F1','F1_legend'))
+
+#Salvando
+FileName <- paste(over_type_exam,"/Top Phylum Abundance by Sample Type and Exam.pdf", sep = "")
+ggsave(FileName, plot = F1, width = 180, height = 170, units = "mm", dpi = 300)
+
+#Salvando
+FileName <- paste(over_type_exam,"/Top Phylum Abundance by Sample Type and Exam.png", sep = "")
+ggsave(FileName, plot = F1, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(over_type_exam,"/Top Phylum Abundance by Sample Type and Exam.xlsx", sep = "")
+write_xlsx(ps_ra_melt, FileName)
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+
+### Health x disease composition per Exam - Family level
+```{r health_dis_comp_family, eval=T, echo=F}
+path <- '/home/otavio/Projects/Miller_et_al_2024_gengivitis/Analysis/'
+over_type_exam = paste(path,"/overview_by_type_and_exam/",sep = "")
+
+#Importando o objeto phyloseq aglomerado em gênero
+ps <- readRDS("ps1.dna.family.rds")
+
+# Transformar abundâncias absolutas em abundâncias relativas
+ps_ra <- transform_sample_counts(ps, function(x) x / sum(x))
+ps_ra_melt <- psmelt(ps_ra)
+
+#Definindo a paleta de cores para a variável principal
+palette <- c("magenta", "darkgreen")
+
+#Legend
+g_legend<-function(a.gplot){ 
+  tmp <- ggplot_gtable(ggplot_build(a.gplot)) 
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box") 
+  legend <- tmp$grobs[[leg]] 
+  return(legend)} 
+mytheme <- theme(axis.title = element_text(size = 10), axis.text = element_text(size = 8)) + theme_bw()
+
+# Subset
+family.summary <- aggregate(Abundance~sample.type+Family, data = ps_ra_melt, FUN = mean)
+family.summary.ordered <- family.summary[order(family.summary$Abundance,decreasing = T),]
+
+# Encontrando top10 por Exam
+family.top.1 <- family.summary.ordered$Family[family.summary.ordered$sample.type == "health"][1:10]
+family.top.2 <- family.summary.ordered$Family[family.summary.ordered$sample.type == "disease"][1:10]
+#family.top.3 <- family.summary.ordered$Family[family.summary.ordered$Exam == "Exam 3"][1:10]
+
+# subset 
+top10 <- unique(c(family.top.1,family.top.2))#,family.top.3))
+top10.max <- aggregate(Abundance~Family, data = family.summary.ordered[family.summary.ordered$Family %in% top10,], max)
+
+family.keep <- top10.max$Family[top10.max$Abundance>0.05]
+
+# fig 3a (Boxplot top family por Exam)
+ps_ra_melt$Abundance_percent <- ifelse(ps_ra_melt$Abundance < 0.001, 0.1,ps_ra_melt$Abundance*100)
+
+F2 <- ggplot(ps_ra_melt[ps_ra_melt$Family %in% family.keep,], aes(y = Family, x = Abundance_percent)) + 
+  geom_boxplot(position =position_dodge2(reverse = TRUE), aes(color = sample.type), alpha = 0.5) + 
+  geom_boxplot(position =position_dodge2(reverse = TRUE), aes(fill = sample.type), alpha = 0.5, outlier.shape = 21) +
+  facet_wrap(~ Exam, nrow = 1) +
+  scale_fill_manual(values = palette) + 
+  scale_color_manual(values = palette) + 
+  scale_x_log10() +
+  ylab("") +
+  xlab("Abundance (%)") +
+  theme_bw() + theme(axis.title = element_text(size = 10), axis.text.x = element_text(size = 8),legend.position = 'bottom',axis.text.y = element_text(face="italic",size = 8),
+  plot.margin = unit(c(1, 1, 1, 1), "lines")) # Ajuste as margens aqui (topo, direita, baixo, esquerda)
+
+print(F2)
+
+# plot legend
+F2_legend <- g_legend(F2 + geom_boxplot(aes(color=sample.type,fill=sample.type),alpha=0.5)+ 
+  theme_bw() + theme(axis.title = element_text(size = 10), 
+                     axis.text = element_text(size = 8), 
+                     axis.text.x=element_blank(), 
+                     axis.ticks.x=element_blank(), 
+                     legend.position = 'bottom'))
+
+# Save plot
+FileName <- paste(over_type_exam,"/Top family Abundance by Sample Type and Exam.RData", sep = "")
+save(file = FileName,list = c('F2','F2_legend'))
+
+#Salvando
+FileName <- paste(over_type_exam,"/Top family Abundance by Sample Type and Exam.pdf", sep = "")
+ggsave(FileName, plot = F2, width = 180, height = 170, units = "mm", dpi = 300)
+
+#Salvando
+FileName <- paste(over_type_exam,"/Top family Abundance by Sample Type and Exam.png", sep = "")
+ggsave(FileName, plot = F2, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(over_type_exam,"/Top family Abundance by Sample Type and Exam.xlsx", sep = "")
+write_xlsx(ps_ra_melt, FileName)
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+
+### Health x disease composition per Exam - Genus level
+```{r health_dis_comp_genus, eval=T, echo=F}
+path <- '/home/otavio/Projects/Miller_et_al_2024_gengivitis/Analysis/'
+over_type_exam = paste(path,"/overview_by_type_and_exam/",sep = "")
+
+#Importando o objeto phyloseq aglomerado em gênero
+ps <- readRDS("ps1.dna.genus.rds")
+
+# Transformar abundâncias absolutas em abundâncias relativas
+ps_ra <- transform_sample_counts(ps, function(x) x / sum(x))
+ps_ra_melt <- psmelt(ps_ra)
+
+#Definindo a paleta de cores para a variável principal
+palette <- c("magenta", "darkgreen")
+
+#Legend
+g_legend<-function(a.gplot){ 
+  tmp <- ggplot_gtable(ggplot_build(a.gplot)) 
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box") 
+  legend <- tmp$grobs[[leg]] 
+  return(legend)} 
+mytheme <- theme(axis.title = element_text(size = 10), axis.text = element_text(size = 8)) + theme_bw()
+
+# subset relevant taxa
+genus.summary <- aggregate(Abundance~sample.type+Genus, data = ps_ra_melt, FUN = mean)
+genus.summary.ordered <- genus.summary[order(genus.summary$Abundance,decreasing = T),]
+
+# find top 10 per time point
+genus.top.1 <- genus.summary.ordered$Genus[genus.summary.ordered$sample.type == "health"][1:10]
+genus.top.2 <- genus.summary.ordered$Genus[genus.summary.ordered$sample.type == "disease"][1:10]
+#genus.top.3 <- genus.summary.ordered$Genus[genus.summary.ordered$Exam == "Exam 3"][1:10]
+
+# subset the ones with mead abundance above 
+top10 <- unique(c(genus.top.1,genus.top.2))#,genus.top.3))
+top10.max <- aggregate(Abundance~Genus, data = genus.summary.ordered[genus.summary.ordered$Genus %in% top10,], max)
+
+
+genus.keep <- top10.max$Genus[top10.max$Abundance>0.05]
+
+
+# fig 2 a (boxplot top genera by timepint)
+ps_ra_melt$Abundance_percent <- ifelse(ps_ra_melt$Abundance < 0.001, 0.1,ps_ra_melt$Abundance*100)
+
+F3 <- ggplot(ps_ra_melt[ps_ra_melt$Genus %in% genus.keep,], aes(y = Genus, x = Abundance_percent)) + 
+  geom_boxplot(position =position_dodge2(reverse = TRUE), aes(color = sample.type), alpha = 0.5) + 
+  geom_boxplot(position =position_dodge2(reverse = TRUE), aes(fill = sample.type), alpha = 0.5, outlier.shape = 21) +
+  facet_wrap(~ Exam, nrow = 1) +
+  scale_fill_manual(values = palette) + 
+  scale_color_manual(values = palette) + 
+  scale_x_log10() +
+  ylab("") +
+  xlab("Abundance (%)") +
+  theme_bw() + theme(axis.title = element_text(size = 10), axis.text.x = element_text(size = 8),legend.position = 'bottom',axis.text.y = element_text(face="italic",size = 8),
+  plot.margin = unit(c(1, 1, 1, 1), "lines")) # Ajuste as margens aqui (topo, direita, baixo, esquerda)
+
+print(F3)
+
+# plot legend
+F3_legend <- g_legend(F3 + geom_boxplot(aes(color=sample.type,fill=sample.type),alpha=0.5)+ 
+  theme_bw() + theme(axis.title = element_text(size = 10), 
+                     axis.text = element_text(size = 8), 
+                     axis.text.x=element_blank(), 
+                     axis.ticks.x=element_blank(), 
+                     legend.position = 'bottom'))
+
+# Save plot
+FileName <- paste(over_type_exam,"/Top Genera Abundance by Sample Type and Exam.RData", sep = "")
+save(file = FileName,list = c('F3','F3_legend'))
+
+#Salvando
+FileName <- paste(over_type_exam,"/Top Genera Abundance by Sample Type and Exam.pdf", sep = "")
+ggsave(FileName, plot = F3, width = 180, height = 170, units = "mm", dpi = 300)
+
+#Salvando
+FileName <- paste(over_type_exam,"/Top Genera Abundance by Sample Type and Exam.png", sep = "")
+ggsave(FileName, plot = F3, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(over_type_exam,"/Top Genera Abundance by Sample Type and Exam.xlsx", sep = "")
+write_xlsx(ps_ra_melt, FileName)
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+
+###########################################################
+
+# Alpha diversity - dado íntegro
+```{r alpha_a,eval=TRUE, echo=F, fig.cap='Figure : Boxplot of alpha diversity - Shannon diversity index, by Exam and Sample type.'}
+path <- '/home/otavio/Projects/Miller_et_al_2024_gengivitis/Analysis/'
+alpha_div = paste(path,"/alpha_div/",sep = "")
+dir.create(alpha_div)
+
+ps <- readRDS("ps0.dna.rds")
+
+#Definindo a paleta de cores para a variável principal
+palette <- c("magenta", "darkgreen")
+
+#Legend
+g_legend<-function(a.gplot){ 
+  tmp <- ggplot_gtable(ggplot_build(a.gplot)) 
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box") 
+  legend <- tmp$grobs[[leg]] 
+  return(legend)} 
+
+mytheme <- theme(axis.title = element_text(size = 10), axis.text = element_text(size = 8)) + theme_bw()
+
+# Alpha diversidade 
+df.adiv <- cbind(data.frame(sample_data(ps)), estimate_richness(ps, measures = "Shannon"))
+
+# Sumarizando por tempo e grupo
+df.adiv.summary <- df.adiv %>%
+  group_by(Exam, sample.type) %>%
+  summarise(n = n(), Shannon_mean = mean(Shannon), Shannon_sd = sd(Shannon))
+
+# Tabela
+kable(df.adiv.summary[,1:5], row.names = F,digits = 3, caption = 'Summary of alpha diversity by exam and sample type',col.names = c("Exam", "Sample type", "Samples (n)", "Mean","SD")) %>%
+  kable_classic(full_width = F, position = "left")%>%
+  add_header_above(c("","", "", "Shannon Diversity index" = 2))%>%
+  pack_rows(index = table(df.adiv.summary$Exam), label_row_css = "background-color: #666; color: #fff;")
+
+# Plot
+
+# Fig Alpha Div (Shannon)
+F4 <- ggplot(df.adiv, aes(x = sample.type, y= Shannon, alpha = 0.5)) + 
+  geom_boxplot(aes(color = sample.type)) + 
+  geom_boxplot(aes(fill = sample.type), outlier.shape = 21) + 
+  scale_fill_manual(values = palette) + 
+  scale_color_manual(values = palette) +
+  facet_wrap(~ Exam, nrow = 1) +
+  ylab("Shannon diversity index") + xlab("") + 
+  theme_bw() + theme(axis.title = element_text(size = 10), 
+                     axis.text = element_text(size = 8), 
+                     axis.text.x=element_blank(), 
+                     axis.ticks.x=element_blank())#, 
+                     #legend.position = 'none')
+
+# Save plot
+FileName <- paste(alpha_div,"/Boxplot of alpha diversity - Shannon diversity index, by Exam and Sample type.RData", sep = "")
+save(file = FileName,list = c('F4','df.adiv'))
+
+#Salvando
+FileName <- paste(alpha_div,"/Boxplot of alpha diversity - Shannon diversity index, by Exam and Sample type.pdf", sep = "")
+ggsave(FileName, plot = F4, width = 180, height = 170, units = "mm", dpi = 300)
+
+#Salvando
+FileName <- paste(alpha_div,"/Boxplot of alpha diversity - Shannon diversity index, by Exam and Sample type.png", sep = "")
+ggsave(FileName, plot = F4, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(alpha_div,"/Boxplot of alpha diversity - Shannon diversity index, by Exam and Sample type.xlsx", sep = "")
+write_xlsx(df.adiv, FileName)
+
+print(F4)
+```
+
+
+## Linear Mixed Effects for Alpha Diversity
+```{r alpha_b,eval=TRUE, echo=F}
+set.seed(123)
+
+# Modelo misto com intercepto
+# Se você acredita que diferentes pacientes podem ter trajetórias diferentes ao longo do tempo, modele (Tempo | ID do paciente (não da amostra))
+#Se você acredita que somente o paciente é um efeito aleatório, mas que os pacientes vão variar igualmente ao longo do tempo dentro do eu grupo amostral, modele (1 | ID do paciente)
+model_shannon <- lme(
+  fixed = Shannon ~ Exam * sample.type,       # Efeitos fixos de Exam e sample.type
+ random = ~ 1 | patientID, # Correlaciona sample.type dentro de cada paciente
+  correlation = corCompSymm(form = ~ 1 | patientID/sample.type), # Correlação composta simétrica para correlação entre states
+  data = df.adiv
+)
+
+summary(model_shannon)
+
+#clean environment
+rm(list = ls(all = TRUE))
+```
+Fixed Effects (Efeitos Fixos)
+Os efeitos fixos modelam as diferenças médias de Shannon entre os níveis de Exam e sample.type:
+
+Intercepto (3.18,p<0.0001):
+Representa a média ajustada de Shannon para amostras health no exame 1.
+É altamente significativo, indicando que Shannon para este grupo é estatisticamente diferente de zero.
+
+Efeito de ExamExam 2 (−0.843,p=0.0464):
+Representa a mudança média de Shannon no exame 2 em relação ao exame 1.
+É significativo, indicando uma redução na diversidade de Shannon no exame 2.
+
+Efeito de ExamExam 3 (−0.218,p=0.5875):
+Representa a mudança média de Shannon no exame 3 em relação ao exame 1.
+Não é significativo, indicando que não há diferença substancial na diversidade entre os exames 3 e 1.
+
+Efeito de sample.typedisease (1.12,p=0.0117):
+Representa a diferença média de Shannon entre disease e health no exame 1.
+É significativo, indicando que disease apresenta maior diversidade de Shannon do que health.
+
+Interação ExamExam 2:sample.typedisease (0.55,p=0.3342):
+Representa a diferença adicional para disease no exame 2 em relação ao exame 1.
+Não é significativa, sugerindo que a diferença entre disease e health no exame 2 não é estatisticamente relevante.
+
+Interação ExamExam 3:sample.typedisease (−0.33,p=0.5713):
+Representa a diferença adicional para disease no exame 3 em relação ao exame 1.
+Não é significativa, indicando que a diferença entre disease e health no exame 3 também não é estatisticamente relevante.
+
+Conclusões
+Efeitos principais:
+sample.typedisease é significativo (p=0.0117), indicando que disease apresenta maior diversidade de Shannon do que health no exame 1.
+
+ExamExam 2 é significativo (p=0.0464), sugerindo uma redução média de Shannon no exame 2 em relação ao exame 1.
+Interações:
+
+As interações entre Exam e sample.type não são significativas (p>0.3), indicando que a diferença entre health e disease não varia substancialmente ao longo do tempo.
+
+## Alpha diversity - rarefação
+```{r alpha_a_r,eval=TRUE, echo=F, fig.cap='Figure : Boxplot of alpha diversity - rarefied - Shannon diversity index, by Exam and Sample type.'}
+
+path <- '/home/otavio/Projects/Miller_et_al_2024_gengivitis/Analysis/'
+alpha_div_r = paste(path,"/alpha_div_rarefied/",sep = "")
+dir.create(alpha_div_r)
+
+#Importando objeto phyloseq
+ps <- readRDS("ps0.dna.rds")
+
+# Extraindo a matriz de contagem de ASVs do objeto phyloseq
+asv_table <- as(otu_table(ps), "matrix")
+
+# Verificando se ASVs são linhas ou colunas e ajustando conforme necessário
+if (taxa_are_rows(ps)) {
+  # ASVs estão nas linhas
+  rarefied_asv_table <- rrarefy(asv_table, sample = min(rowSums(asv_table)))
+} else {
+  # ASVs estão nas colunas
+  rarefied_asv_table <- rrarefy(t(asv_table), sample = min(rowSums(asv_table)))
+  rarefied_asv_table <- t(rarefied_asv_table) # Reverter a transposição após rarefação
+}
+
+# Atualizando a tabela de ASVs no objeto phyloseq com a tabela rarefeita
+otu_table(ps) <- otu_table(rarefied_asv_table, taxa_are_rows = FALSE)
+
+# Agora o objeto phyloseq tem dados rarefeitos e você pode continuar com as análises
+
+#Definindo a paleta de cores para a variável principal
+palette <- c("magenta", "darkgreen")
+
+#Legend
+g_legend<-function(a.gplot){ 
+  tmp <- ggplot_gtable(ggplot_build(a.gplot)) 
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box") 
+  legend <- tmp$grobs[[leg]] 
+  return(legend)} 
+
+mytheme <- theme(axis.title = element_text(size = 10), axis.text = element_text(size = 8)) + theme_bw()
+
+# Alpha diversidade 
+df.adiv <- cbind(data.frame(sample_data(ps)), estimate_richness(ps,measures = "Shannon"))
+
+# Sumarizando por tempo e grupo
+df.adiv.summary <- df.adiv %>%
+  group_by(Exam, sample.type) %>%
+  summarise(n = n(), Shannon_mean = mean(Shannon), Shannon_sd = sd(Shannon))
+
+# Tabela
+kable(df.adiv.summary[,1:5], row.names = F,digits = 3, caption = 'Summary of alpha diversity by exam and sample type',col.names = c("Exam", "Sample type", "Samples (n)", "Mean","SD")) %>%
+  kable_classic(full_width = F, position = "left")%>%
+  add_header_above(c("","", "", "Shannon Diversity index" = 2))%>%
+  pack_rows(index = table(df.adiv.summary$Exam), label_row_css = "background-color: #666; color: #fff;")
+
+# Plot
+
+# Fig Alpha Div (Shannon)
+F5 <- ggplot(df.adiv, aes(x = sample.type, y= Shannon, alpha = 0.5)) + 
+  geom_boxplot(aes(color = sample.type)) + 
+  geom_boxplot(aes(fill = sample.type), outlier.shape = 21) + 
+  scale_fill_manual(values = palette) + 
+  scale_color_manual(values = palette) +
+  facet_wrap(~ Exam, nrow = 1) +
+  ylab("Shannon diversity index") + xlab("") + 
+  theme_bw() + theme(axis.title = element_text(size = 10), 
+                     axis.text = element_text(size = 8), 
+                     axis.text.x=element_blank(), 
+                     axis.ticks.x=element_blank())#, 
+                     #legend.position = 'none')
+
+# Save plot
+FileName <- paste(alpha_div_r,"/Boxplot of alpha diversity - Shannon diversity index, by Exam and Sample type.RData", sep = "")
+save(file = FileName,list = c('F5','df.adiv'))
+
+#Salvando
+FileName <- paste(alpha_div_r,"/Boxplot of alpha diversity - Shannon diversity index, by Exam and Sample type.pdf", sep = "")
+ggsave(FileName, plot = F5, width = 180, height = 170, units = "mm", dpi = 300)
+
+#Salvando
+FileName <- paste(alpha_div_r,"/Boxplot of alpha diversity - Shannon diversity index, by Exam and Sample type.png", sep = "")
+ggsave(FileName, plot = F5, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(alpha_div_r,"/Boxplot of alpha diversity - Shannon diversity index, by Exam and Sample type.xlsx", sep = "")
+write_xlsx(df.adiv, FileName)
+
+print(F5)
+```
+
+
+## Linear Mixed Effects for Alpha Diversity
+```{r alpha_b_r,eval=TRUE, echo=F}
+set.seed(123)
+
+# Modelo misto com intercepto
+# Se você acredita que diferentes pacientes podem ter trajetórias diferentes ao longo do tempo, modele (Tempo | ID do paciente (não da amostra))
+#Se você acredita que somente o paciente é um efeito aleatório, mas que os pacientes vão variar igualmente ao longo do tempo dentro do eu grupo amostral, modele (1 | ID do paciente)
+model_shannon <- lme(
+  fixed = Shannon ~ Exam * sample.type,       # Efeitos fixos de Exam e sample.type
+ random = ~ 1 | patientID, # Correlaciona sample.type dentro de cada paciente
+  correlation = corCompSymm(form = ~ 1 | patientID/sample.type), # Correlação composta simétrica para correlação entre states
+  data = df.adiv
+)
+
+summary(model_shannon)
+
+#clean environment
+#rm(list = ls(all = TRUE))
+```
+1. Resumo do Modelo
+Random Effects (Efeitos Aleatórios)
+Intercepto para patientID (StdDev=0.024):
+A variabilidade entre pacientes é pequena, indicando que a maioria da variação ocorre dentro de cada paciente, não entre diferentes pacientes.
+Resíduos (StdDev=0.494):
+A maior parte da variabilidade não explicada pelo modelo é atribuída aos resíduos.
+
+Correlação composta simétrica (ρ=−0.119):
+Correlação negativa fraca entre health e disease dentro de um mesmo paciente. Isso sugere que, quando uma amostra (health) tem uma diversidade de Shannon maior, a outra amostra (disease) tende a ter uma leve redução.
+
+Fixed Effects (Efeitos Fixos)
+Os efeitos fixos modelam as diferenças médias de Shannon em função de Exam, sample.type, e suas interações.
+Intercepto (3.43,p<0.0001):
+Representa a média ajustada de Shannon no exame 1.
+É altamente significativo, indicando que o índice de Shannon para este grupo é estatisticamente diferente de zero.
+
+Efeito de ExamExam 2 (−0.761,p=0.0326):
+Representa a diferença média de Shannon no exame 2 em relação ao exame 1.
+É significativo, indicando uma redução no índice de Shannon no exame 2.
+
+Efeito de ExamExam 3 (−0.377,p=0.268):
+Representa a diferença média de Shannon no exame 3 em relação ao exame 1.
+Não é significativo, indicando que não há diferença substancial na diversidade entre os exames 3 e 1.
+
+Efeito de sample.typedisease (0.899,p=0.0096):
+Representa a diferença média de Shannon entre disease e health.
+É significativo, indicando que disease apresenta maior diversidade de Shannon do que health.
+
+Interação ExamExam 2:sample.typedisease (0.642,p=0.1854):
+Representa a diferença adicional no efeito de ExamExam 2 para disease em relação a health.
+Não é significativo, sugerindo que a redução observada no exame 2 para health não é substancialmente diferente para disease.
+
+Interação ExamExam 3:sample.typedisease (0.088,p=0.8569):
+Representa a diferença adicional no efeito de ExamExam 3 para disease em relação a health.
+Não é significativo, indicando que a diferença entre disease e health no exame 3 não é estatisticamente relevante.
+
+2. Interpretação dos Resultados
+Efeitos principais:
+sample.typedisease é significativo (p=0.0096), indicando que disease apresenta uma diversidade de Shannon significativamente maior do que health.
+ExamExam 2 é significativo (p=0.0326), sugerindo uma redução média de Shannon no exame 2 em relação ao exame 1 para amostras health.
+Interações:
+
+As interações entre Exam e sample.type (ExamExam2:sample.typedisease e ExamExam3:sample.typedisease) não são significativas (p>0.1), indicando que as diferenças observadas em Exam não variam substancialmente entre health e disease.
+
+Correlação (ρ):
+A correlação negativa fraca (ρ=−0.119) entre health e disease sugere uma relação muito tênue entre as amostras dentro de cada paciente. 
+
+3. Conclusão
+Interpretação geral:
+
+A diversidade de Shannon é maior para disease do que para health, especialmente no exame 1.
+
+Não há evidência de que as diferenças entre health e disease mudem ao longo do tempo.
+
+#### Checking residuals normality
+```{r alpha_c,eval=TRUE, echo=F}
+#Obter os resíduos do modelo
+residuals <- residuals(model_shannon)
+
+# Teste de Shapiro-Wilk para normalidade dos resíduos
+shapiro.test(residuals)
+
+# O valor p retornado pelo teste indica se os resíduos seguem uma distribuição normal. Se o valor p for maior que 0.05, você não rejeita a hipótese nula de que os resíduos são normalmente distribuídos, o que é bom para o modelo. Se o valor p for menor que 0.05, os resíduos não seguem uma distribuição normal, o que pode ser um problema e pode exigir transformações nos dados (logarítmica, raíz quadrada ou Box-Cox) ou o uso de modelos não paraḿetricos como Modelos aditivos generalizados (GAMs), Modelos de Regressão Robusta ou Modelos de Regressão Generalizados (GLMMs).
+```
+
+
+#### Predicted effects for Shannon index
+```{r alpha_d,eval=TRUE, echo=F}
+# carregar pacotes necessários
+library(sjPlot)
+library(sjmisc)
+
+# Plotar os efeitos fixos
+plot_model(model_shannon, type = "pred", terms = c("Exam", "sample.type")) +
+  theme_minimal() +
+  labs(title = "Predicted effects for Shannon index", 
+       x = "Exam", 
+       y = "Shannon Index", 
+       color = "Sample Type")
+```
+
+#### Confidence Intervals of Model Coefficients
+```{r alpha_f,eval=TRUE, echo=F}
+library(dotwhisker)
+
+# Criar gráfico com intervalos de confiança
+dwplot(model_shannon) +
+  theme_minimal() +
+  labs(title = "Confidence Intervals of Model Coefficients",
+       x = "Coefficient", y = "Terms")
+
+# clean environment
+rm(list = ls(all = TRUE))
+
+# Eixo X
+#Significado: O eixo X mostra os coeficientes estimados para as variáveis do modelo, que podem incluir efeitos fixos e aleatórios.
+#Interpretação:
+#Cada barra representa o intervalo de confiança para um coeficiente. O centro da barra é o valor estimado do coeficiente.
+#O comprimento da barra indica a precisão da estimativa: intervalos mais curtos indicam maior precisão, enquanto intervalos mais longos sugerem maior incerteza na estimativa do coeficiente.
+#Interpretação dos Intervalos
+#Interseção com o Eixo Zero:
+#Se o intervalo de confiança de um coeficiente inclui zero, isso sugere que a variável não tem um efeito estatisticamente significativo na variável dependente. Isso significa que não há evidências suficientes para afirmar que essa variável está associada à variável dependente no nível desejado de significância.
+#Se o intervalo de confiança não inclui zero, isso sugere que a variável é estatisticamente significativa e tem um efeito sobre a variável dependente.
+```
+
+#########################################
+
+# Beta diversity and Clustering - Cross Sectional and Time Series
+## Preparing and evaluating the data
+```{r tsc_data_prep, eval=T, echo=F}
+path <- '/home/otavio/Projects/Miller_et_al_2024_gengivitis/Analysis/'
+Clustering = paste(path,"/Clustering/",sep = "")
+dir.create(Clustering)
+
+#Importando o objeto phyloseq
+ps <- readRDS("ps1.dna.genus.rds")
+
+#Extraindo os dados do objeto phyloseq
+seq_counts <- as.data.frame(t(otu_table(ps)))
+tax_key <- as.data.frame(tax_table(ps))
+
+# Como esses dados são composicionais, eles estão em um simplex.
+# Os dados estarem em um simplex significa que, se conhecermos as abundâncias de todos os OTUs, exceto um, ainda teremos a mesma # quantidade de informação como se conhecêssemos todos os OTUs.
+# Evidência:
+# Estimar a matriz de covariância para as ASVs
+covariance_matrix<-as.matrix(seq_counts)%*%t(seq_counts)
+
+#Avaliar o determinante da matriz de covariância
+cov_determinant<-det(covariance_matrix)
+cov_determinant # O resultado deve ser 0
+# O determinante da matriz de covariância (o que acabamos de calcular) é equivalente ao produto da proporção de variância explicada por cada eixo da PCA. Se o determinante for 0, isso significa que há um eixo que explica 0 variância, que não podemos separar dos outros eixos. Os dados precisam ser transformados para serem adequados à PCA.
+
+# Abordagem para ordenação por PCA com Dados Composicionais: Transformações de Razão Logarítmica
+# Razão logarítmica
+log_rats <- data.frame(compositions::ilr(t(seq_counts)))
+
+# No entanto, esses são complicados de interpretar, pois você passa de um simplex de dimensão D para um espaço euclidiano de dimensão D-1. Mas, ao usá-los, podemos ver que agora estamos em um regime de covariância invertível.
+
+# Verificando a diferença que a razão logarítmica fez nas características dos dados
+new_covdet <- det(as.matrix(log_rats) %*% t(log_rats)) 
+cov_determinant # Dados de Contagem Originais 
+new_covdet # Após aplicar a razão logarítmica, você verá que nenhum dos eixos é igual a 0
+
+# E altere o comando para ser o mesmo.
+lograt_pca <- prcomp(log_rats)
+```
+
+## Log-Ratio PCA Screeplot
+```{r lrpca_scree, eval=T, echo=F}
+# Conferindo
+lograt_variances<-lograt_pca$sdev^2/sum(lograt_pca$sdev^2)
+barplot(lograt_variances,
+        main='Log-Ratio PCA Screeplot',
+        xlab='PC Axis',
+        ylab='% Variance',
+       col=c(rep('black',2),rep('grey',29)), # Definir em preto quais eixos explicam a maior proporção da variância
+       cex.names=1.5,cex.axis=1.5,cex.lab=1.5,cex.main=1.5)
+legend('topright',fill=c('black','grey'),c('Should Present','??? Judgment Call'))
+#A partir dos eixos que explicam a maior proporção a variância, definimos o número de eixos para os próximos plots. Espera-se que os 3 primeiros eixos expliquem entre 70-90% da variância, caso contrário o PCA perde um pouco o sentido.
+```
+
+## Log-ratio PCA
+```{r lrpca_group1, eval=T, echo=F}
+#Extraindo metadados
+samdf <- microbiome::meta(ps)
+
+#Construindo o df para o pca
+pca_lograt_frame<-data.frame(lograt_pca$x,
+                          sample.type=cbind(as.character(samdf$sample.type)),
+                          Exam=cbind(as.character(samdf$Exam)),
+                          patientID=cbind(as.character(samdf$patientID)))
+
+#Definindo a paleta de cores para a variável principal
+palette <- c("magenta", "darkgreen")
+
+#Gerando o plot
+lrpca <- ggplot(pca_lograt_frame) +
+  geom_polygon(aes(x = PC1, y = PC2, group = patientID, fill = patientID), alpha = 0.3) +
+  geom_point(aes(x = PC1, y = PC2, col = sample.type, shape = as.factor(Exam)), size = 3) +
+  ylab(paste0('PC2 ', round(lograt_variances[2] * 100, 2), '%')) +
+  xlab(paste0('PC1 ', round(lograt_variances[1] * 100, 2), '%')) +
+  scale_color_manual(values = palette, name = 'Sample Type') +
+  scale_shape_manual(values = c(16, 17, 18), name = 'Exam') +
+  ggtitle('Log-Ratio PCA Ordination - Sample Type') +
+  coord_fixed(ratio = lograt_variances[2] / lograt_variances[1]) +
+  theme_bw()
+
+#Salvando
+FileName <- paste(Clustering,"/Log-Ratio PCA Ordination.pdf", sep = "")
+ggsave(FileName, plot = lrpca, width = 180, height = 170, units = "mm", dpi = 300)
+
+#Salvando
+FileName <- paste(Clustering,"/Log-Ratio PCA Ordination.png", sep = "")
+ggsave(FileName, plot = lrpca, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Se quiser exportar para um arquivo Excel
+pca_lograt_frame <- cbind(sampleID = samdf$sampleID, pca_lograt_frame)
+FileName <- paste(Clustering,"/Log-ratio PCA.xlsx", sep = "")
+write_xlsx(pca_lograt_frame,FileName)
+
+# Plot
+lrpca
+```
+
+## PCoA on Jaccard Distance - Scree plot
+```{r pcoa_jac_scree, eval=T, echo=F}
+# Então, vamos começar olhando para a PCoA. A PCoA faz uma PCA em uma matriz de distância construída a partir dos dados.
+# Em seguida, precisamos de uma matriz de distância.
+# Diferentes métricas de distância enfatizam atributos/fatores distintos na comparação de comunidades microbianas.
+# Por exemplo, se quisermos priorizar diferenças na presença/ausência entre amostras, utilizamos Jaccard.
+# ATENÇÃO: a maioria das métricas de distância (Bray-Curtis por exemplo) não leva em consideração a composicionalidade do dado e deve ser evitada.
+
+# Computando distâncias
+jac_dmat<-vegdist(t(seq_counts),method="jaccard")
+
+# Fazendo pcoa
+pcoa_jac<-ape::pcoa(jac_dmat)
+
+# Agora precisamos inspecionar o resultado da PCoA. Analisamos um Screeplot para isso.
+# O Screeplot mostra a quantidade de variância explicada por cada eixo.
+samp_no<-dim(seq_counts)[2]
+jac_variances<-pcoa_jac$values$Relative_eig
+par(mar=c(5,6,4,1)+.1)
+barplot(jac_variances,
+        xlab='Principal Coordinate Axis',
+        ylab='% Variance',
+       col=c(rep('black',3),'darkgrey',rep('lightgrey',28)),
+       cex.names=2,cex.axis=2,cex.lab=2,cex.main=1,
+       names.arg=as.character(1:28)) #número de axis
+legend('topright',fill=c('black','darkgrey','lightgrey'),c('Should Present','Judgment Call','Unnecessary to Present'),cex=2)
+
+#Como interpretar este gráfico: Antes de plotarmos a ordenação real, precisamos decidir quais eixos apresentar.
+#Precisamos selecionar o menor número de eixos possível (para facilitar a visualização) que capture grandes quantidades de variância.
+```
+
+## PCoA on Aitchison Distance - Scree plot
+```{r pcoa_euc_scree, eval=T, echo=F}
+# Realizar a transformação de razão logarítmica faz com que os dados ocupem uma faixa dinâmica similar, permitindo que possamos usar distâncias sensíveis à magnitude, como a distância euclidiana.
+euc_dmat<-dist(log_rats)
+
+# Ordenação com a matriz de distância
+pcoa_euc<-ape::pcoa(euc_dmat)
+euc_variances<-pcoa_euc$values$Relative_eig
+par(mar=c(5,6,4,1)+.1)
+barplot(euc_variances,
+        xlab='Principal Coordinate Axis',
+        ylab='% Variance',
+       col=c(rep('black',4),rep('darkgrey',2),rep('lightgrey',28)),
+       cex.names=2,cex.axis=2,cex.lab=2,cex.main=1,
+       names.arg=as.character(1:28)) #número de axis
+legend('topright',fill=c('black','darkgrey','lightgrey'),c('Should Present','Judgment Call','Unnecessary'),cex=2)
+```
+
+## PCoA - Jaccard
+```{r pcoa_jac, eval=F, echo=F}
+#Quão diferentes são minhas amostras em relação à diversidade?
+#Presença/Ausência (P/A) é recomendada quando se faz perguntas sobre a comunidade INTEIRA.
+#A comunidade microbiana ativa muda nos diferentes timepoints?
+#Para enfatizar as mudanças na presença/ausência, optamos por usar a distância de Jaccard para a ordenação.
+#Nota: Se sua ordenação tiver dados que se alinham em um formato de 'T' ou '+' perpendicular aos eixos, isso geralmente é um indicativo de covariância atribuída às dimensões superiores que não foram plotadas.
+
+pcoa_jac_frame<-data.frame(pcoa_jac$vectors, Exam=cbind(as.character(samdf$Exam)), sample.type=cbind(as.character(samdf$sample.type)), patientID=cbind(as.character(samdf$patientID)))
+eigenvalues<-round(jac_variances,4)*100
+
+pcoa_jac_fig <- plot_ly(pcoa_jac_frame, 
+                             type = 'scatter3d', 
+                             mode = 'markers',
+                             x = ~Axis.2, 
+                             y = ~Axis.3, 
+                             z = ~Axis.1, 
+                             color = ~sample.type,         # Cores baseadas no sample.type
+                             colors = palette,             # Usando a paleta personalizada
+                             symbol = ~Exam,               # Diferencia as bolinhas pelo 'Exam'
+                             symbols = c("circle", "cross", "diamond"), # Exemplos de símbolos, pode ajustar
+                             marker = list(size = 6)) %>%  # Define o tamanho dos marcadores
+  layout(font = list(size = 18),
+         scene = list(xaxis = list(title = paste0('Co 2 ', eigenvalues[2], '%'),
+                                   showticklabels = FALSE, zerolinecolor = 'black'),
+                      yaxis = list(title = paste0('Co 3 ', eigenvalues[3], '%'),
+                                   showticklabels = FALSE, zerolinecolor = 'black'),
+                      zaxis = list(title = paste0('Co 1 ', eigenvalues[1], '%'),
+                                   showticklabels = FALSE, zerolinecolor = 'black'),
+                      aspectratio = list(x = 3 * eigenvalues[2] / eigenvalues[1], 
+                                         y = 3 * eigenvalues[3] / eigenvalues[1], 
+                                         z = 3)))
+
+
+# Defina o tamanho desejado em mm e o DPI
+width_mm <- 180
+height_mm <- 170
+dpi <- 300
+
+# Converta para pixels
+width_px <- (width_mm / 25.4) * dpi
+height_px <- (height_mm / 25.4) * dpi
+
+# Salve a imagem usando o kaleido
+FileName <- paste(Clustering, "/PCoA Jaccard.pdf", sep = "")
+plotly::save_image(pcoa_jac_fig, FileName, width = width_px, height = height_px, scale = 1)
+
+FileName <- paste(Clustering, "/PCoA Jaccard.png", sep = "")
+plotly::save_image(pcoa_jac_fig, FileName, width = width_px, height = height_px, scale = 1)
+
+# Se quiser exportar para um arquivo Excel
+pcoa_jac_frame <- cbind(sampleID = samdf$sampleID, pcoa_jac_frame)
+FileName <- paste(Clustering,"/PCoA Jaccard.xlsx", sep = "")
+write_xlsx(pcoa_jac_frame,FileName)
+
+# Plot
+pcoa_jac_fig
+```
+
+## PCoA - Aitchison
+```{r pcoa_eu_ex, eval=F, echo=F}
+pcoa_euc_frame<-data.frame(pcoa_euc$vectors,Exam=cbind(as.character(samdf$Exam)), sample.type=cbind(as.character(samdf$sample.type)), patientID=cbind(as.character(samdf$patientID)))
+euc_eigenvalues<-round(euc_variances,4)*100
+pcoa_euc_fig <- plot_ly(pcoa_euc_frame,type='scatter3d',mode='markers',
+          x=~Axis.3,
+          y=~Axis.2,
+          z=~Axis.1,
+          colors=palette,
+          color=~sample.type, 
+          symbol = ~Exam, 
+          symbols = c("circle", "cross", "diamond"),
+          marker = list(size = 6))%>%
+          layout(font=list(size=18),
+         #title='PCoA Euclidean Distance',
+         scene=list(xaxis=list(title=paste0('Co 3 ',euc_eigenvalues[3],'%'),
+                    showticklabels=FALSE,zerolinecolor='black'),
+         yaxis=list(title=paste0('Co 2 ',euc_eigenvalues[2],'%'),
+                    showticklabels=FALSE,zerolinecolor='black'),
+         zaxis=list(title=paste0('Co 1 ',euc_eigenvalues[1],'%'),
+                    showticklabels=FALSE,zerolinecolor='black'),
+                   aspectratio = list(x=3*euc_eigenvalues[3]/euc_eigenvalues[1], 
+                                      y=3*euc_eigenvalues[2]/euc_eigenvalues[1], 
+                                      z=3)))
+
+# Defina o tamanho desejado em mm e o DPI
+width_mm <- 180
+height_mm <- 170
+dpi <- 300
+
+# Converta para pixels
+width_px <- (width_mm / 25.4) * dpi
+height_px <- (height_mm / 25.4) * dpi
+
+# Salve a imagem
+FileName <- paste(Clustering, "/PCoA Aitchison.pdf", sep = "")
+plotly::save_image(pcoa_euc_fig, FileName, width = width_px, height = height_px, scale = 1)
+
+FileName <- paste(Clustering, "/PCoA Aitchison.png", sep = "")
+plotly::save_image(pcoa_euc_fig, FileName, width = width_px, height = height_px, scale = 1)
+
+# Se quiser exportar para um arquivo Excel
+pcoa_euc_frame <- cbind(sampleID = samdf$sampleID, pcoa_euc_frame)
+FileName <- paste(Clustering,"/PCoA Aitchison.xlsx", sep = "")
+write_xlsx(pcoa_euc_frame,FileName)
+
+# Plot
+pcoa_euc_fig
+
+#Para corroborar o gráfico em 3D, usaremos um simples agrupamento hierárquico e plotar o dendrograma para verificar se os padrões se repetem.
+```
+
+## Hierarchical clustering - Jaccard
+```{r hclust_jac, eval=T, echo=F}
+cluster_ex<-hclust(vegdist(t(seq_counts),method='jaccard'),method="complete")
+plot(cluster_ex,main='Jaccard Hierarchical Agglomerative Clustering',xlab='',sub='')
+```
+
+## Non-metric Multidimensional Scaling (NMDS)
+```{r nmds, eval=T, echo=F}
+#Vamos impor a condição em uma técnica de ordenação de que a resposta DEVE ser em 2D. Aqui, recorremos ao Non-Metric Multidimensional Scaling (NMDS - Escalonamento Multidimensional Não-Métrico).
+
+set.seed(123) # Manter para reprodutibilidade
+
+## Podemos comparar a métrica de distância baseada na composição relativa com a métrica de distância baseada em presença/ausência
+euc_nmds<-metaMDS(euc_dmat,k=2,autotransform=FALSE)
+jac_nmds<-metaMDS(jac_dmat,k=2,autotransform=FALSE)
+
+# Dê uma olhada no estresse - no geral esse valor não é extremamente informativo, mas saiba que o estresse mais próximo de 1 é menos representativo de seus dados reais.
+euc_nmds$stress 
+jac_nmds$stress
+```
+
+## NMDS on Jaccard and Aitchison Distances
+```{r nmds_plot_ex, eval=T, echo=F}
+# Os eixos para NMDS são totalmente arbitrários, então a escala dos eixos não importa, e os dados podem ser rotacionados/refletidos em torno dos eixos, e o NMDS ainda será o mesmo.
+euc_frame<-data.frame(euc_nmds$points, Exam=cbind(as.character(samdf$Exam)), sample.type=cbind(as.character(samdf$sample.type)), patientID=cbind(as.character(samdf$patientID)))
+jac_frame<-data.frame(jac_nmds$points, Exam=cbind(as.character(samdf$Exam)), sample.type=cbind(as.character(samdf$sample.type)), patientID=cbind(as.character(samdf$patientID)))
+
+# Para NMDS Aitchison distance
+euc_fig <- ggplot(euc_frame, aes(x = MDS1, y = MDS2, group = patientID)) +
+  geom_polygon(aes(fill = patientID), alpha = 0.3) +  # Polígono conectando os pontos por patientID
+  geom_point(aes(col = sample.type, shape = as.factor(Exam)), size = 3) +  # Cor por sample.type, shape por Exam
+  scale_color_manual(values = palette, name = 'Sample Type') +  # Paleta de cores
+  scale_shape_manual(values = c(16, 17, 18), name = 'Exam') +  # Formato dos pontos por Exam
+  theme_bw() +
+  theme(legend.position = 'right') +
+  xlab('NMDS 1') + ylab('NMDS 2') +
+  ggtitle('Aitchison Distance NMDS')
+
+# Para NMDS Jaccard distance
+jac_fig <- ggplot(jac_frame, aes(x = MDS1, y = MDS2, group = patientID)) +
+  geom_polygon(aes(fill = patientID), alpha = 0.3) +  # Polígono conectando os pontos por patientID
+  geom_point(aes(col = sample.type, shape = as.factor(Exam)), size = 3) +  # Cor por sample.type, shape por Exam
+  scale_color_manual(values = palette, name = 'Sample Type') +  # Paleta de cores
+  scale_shape_manual(values = c(16, 17, 18), name = 'Exam') +  # Formato dos pontos por Exam
+  theme_bw() +
+  theme(legend.position = 'right') +
+  xlab('NMDS 1') + ylab('NMDS 2') +
+  ggtitle('Jaccard Distance NMDS')
+
+
+#Salvando
+FileName <- paste(Clustering,"/Jaccard Distance NMDS.pdf", sep = "")
+ggsave(FileName, plot = jac_fig, width = 180, height = 170, units = "mm", dpi = 300)
+
+#Salvando
+FileName <- paste(Clustering,"/Jaccard Distance NMDS.png", sep = "")
+ggsave(FileName, plot = jac_fig, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Se quiser exportar para um arquivo Excel
+jac_frame <- cbind(sampleID = samdf$sampleID, jac_frame)
+FileName <- paste(Clustering,"/Jaccard Distance NMDS.xlsx", sep = "")
+write_xlsx(jac_frame,FileName)
+
+#Salvando
+FileName <- paste(Clustering,"/Aitchison Distance NMDS.pdf", sep = "")
+ggsave(FileName, plot = euc_fig, width = 180, height = 170, units = "mm", dpi = 300)
+
+#Salvando
+FileName <- paste(Clustering,"/Aitchison Distance NMDS.png", sep = "")
+ggsave(FileName, plot = euc_fig, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Se quiser exportar para um arquivo Excel
+euc_frame <- cbind(sampleID = samdf$sampleID, euc_frame)
+FileName <- paste(Clustering,"/Aitchison Distance NMDS.xlsx", sep = "")
+write_xlsx(euc_frame,FileName)
+
+jac_fig
+euc_fig
+```
+
+## Betadispersion 
+```{r beta_disper_a, eval=F, echo=F}
+#Conferir a abordagem mais adequada (beta ou permdisper)
+df <- data.frame(sample_data(ps))
+
+# Beta diversity dispersion
+beta.disp <- betadisper(euc_dmat, df$sample.type)
+anova(beta.disp)
+#Se p <0.05 na betadisper, melhor não utilizar PERMANOVA. Utilizar modelos lineares para efeitos mistos.
+```
+
+## PERMANOVA
+### PERMANOVA for Aitchison distance - Timepoint
+```{r permanova_ait_ex,eval=T, echo=F}
+#adonis(euc_dmat ~ sample.type + Exam + Sex + Age, data = samdf, strata = samdf$patientID)
+perm <- with(samdf, how(nperm = 999, blocks = patientID))
+adonis2(euc_dmat ~ Exam, data = samdf, permutations = perm)
+```
+
+### PERMANOVA for Jaccard distance - Timepoint
+```{r permanova_jac_ex,eval=T, echo=F}
+perm <- with(samdf, how(nperm = 999, blocks = patientID))
+adonis2(jac_dmat ~ Exam, data = samdf, permutations = perm)
+```
+
+### PERMANOVA for Aitchison distance - Group
+```{r permanova_ait_st,eval=T, echo=F}
+perm <- with(samdf, how(nperm = 999))
+adonis2(euc_dmat ~ samdf$sample.type, data = samdf, permutations = perm)
+```
+
+### PERMANOVA for Jaccard distance - Group
+```{r permanova_jac_st,eval=T, echo=F}
+perm <- with(samdf, how(nperm = 999))
+adonis2(jac_dmat ~ samdf$sample.type, data = samdf, permutations = perm)
+```
+
+### Pairwise PERMANOVA
+```{r pairwise_permanova, eval=FALSE, echo=F}
+#Caso o permanova dê significativo para variáveis não-binárias
+library("RVAideMemoire")
+pairwise.perm.manova(euc_dmat, group, nperm=999, p.method = "fdr")
+```
+
+## Linear Mixed Effects models for Aitchison distance
+```{r beta_model_euc,eval=T, echo=F}
+# Modelo misto com intercepto
+# Se você acredita que diferentes pacientes podem ter trajetórias diferentes ao longo do tempo, modele (Tempo | ID do paciente (não da amostra))
+#Se você acredita que somente o paciente é um efeito aleatório, mas que os pacientes vão variar igualmente ao longo do tempo dentro do eu grupo amostral, modele (1 | ID do paciente)
+# Modelo linear misto para o primeiro componente principal (PC1)
+
+#Construindo o df para o modelo
+model_lograt_frame<-data.frame(
+  lograt_pca$x,
+  sample.type = as.factor(samdf$sample.type),  # Preserva o fator
+  Exam = as.factor(samdf$Exam),               # Preserva o fator
+  patientID = as.factor(samdf$patientID))      # Preserva o fator
+
+model_PC1_ar1 <- lme(
+  fixed = PC1 ~ sample.type * Exam,
+  random = ~ Exam | patientID,
+  correlation = corAR1(form = ~ 1 | patientID),
+  data = pca_lograt_frame,
+  control = lmeControl(maxIter = 100, msMaxIter = 100, opt = "optim") # Ajuste de iterações e otimizador
+)
+
+summary(model_PC1_ar1)
+
+# Modelo linear misto para o primeiro componente principal (PC2)
+model_PC2_ar1 <- lme(
+  fixed = PC2 ~ sample.type * Exam,
+  random = ~ Exam | patientID,
+  correlation = corAR1(form = ~ 1 | patientID),
+  data = pca_lograt_frame,
+  control = lmeControl(maxIter = 100, msMaxIter = 100, opt = "optim") # Ajuste de iterações e otimizador
+)
+
+summary(model_PC2_ar1)
+```
+Esses resultados apresentam dois modelos de efeitos mistos ajustados para os componentes principais PC1 e PC2, com efeitos fixos de sample.type e Exam (Exames) e um efeito aleatório de Exam dentro de cada patientID, além de uma estrutura de autocorrelação temporal AR(1).
+
+Vamos interpretar os resultados detalhadamente.
+
+Modelo 1: PC1 ~ sample.type * Exam + (Exam | patientID)
+Efeitos Aleatórios
+Intercepto (StdDev = 2.7319): Indica a variabilidade entre pacientes no valor médio de PC1.
+
+Slopes de Exam (StdDev):
+
+Exam 2: StdDev = 2.4423
+Exam 3: StdDev = 1.8384
+A alta correlação (0.995 e 0.996) entre os interceptos e os slopes de Exam indica que, para um dado paciente, as variações de PC1 entre os exames são altamente relacionadas, sugerindo uma trajetória consistente entre os exames.
+
+Resíduo (StdDev = 4.0923): Representa a variabilidade residual não explicada pelo modelo.
+
+Estrutura de Correlação Temporal (AR(1))
+Phi = -0.5720: A correlação negativa indica uma dependência inversa entre as observações consecutivas ao longo dos exames. Isso sugere que, em média, os valores de PC1 para um paciente tendem a flutuar de um exame para o próximo, em vez de seguir uma tendência contínua.
+Efeitos Fixos
+Intercepto (8.943): Representa o valor médio de PC1 para o grupo de referência (Exam 1 e sample.type de referência).
+sample.typehealth (-12.468): Pacientes com health têm, em média, um valor de PC1 mais baixo do que aqueles com disease.
+ExamExam 2 (-6.395) e ExamExam 3 (-6.556): Ambos indicam uma diminuição significativa em PC1 em relação ao Exam 1.
+Interações:
+sample.typehealth:ExamExam 2 (5.3129) e sample.typehealth:ExamExam 3 (5.1435): A interação sugere uma variação entre health e disease ao longo dos exames, mas os valores de p-value indicam que essas interações não são estatisticamente significativas.
+Modelo 2: PC2 ~ sample.type * Exam + (Exam | patientID)
+Efeitos Aleatórios
+Intercepto (StdDev = 4.5060): A variabilidade entre pacientes no valor médio de PC2 é elevada, sugerindo diferenças individuais notáveis.
+
+Slopes de Exam (StdDev):
+
+Exam 2: StdDev = 2.4342
+Exam 3: StdDev = 1.3370
+Há uma correlação negativa moderada entre o intercepto e Exam 2 (-0.653) e uma correlação mais fraca entre os slopes de Exam 2 e Exam 3 (0.463). Isso sugere que, para alguns pacientes, o valor de PC2 aumenta em Exam 2 e diminui em Exam 3, sem uma relação muito forte.
+
+Resíduo (StdDev = 2.0021): A variabilidade residual é menor em comparação com o modelo de PC1, indicando que uma parte significativa da variação é explicada pelo modelo.
+
+Estrutura de Correlação Temporal (AR(1))
+Phi = -0.7511: A correlação negativa mais forte sugere uma oscilação maior em PC2 entre os exames consecutivos, com uma dependência temporal inversa.
+Efeitos Fixos
+Intercepto (3.073): Valor médio de PC2 para o grupo de referência.
+sample.typehealth (-3.844): Assim como em PC1, pacientes com health têm valores mais baixos de PC2 do que aqueles com disease, e o efeito é estatisticamente significativo (p = 0.033).
+Exam:
+ExamExam 2 (-5.331) e ExamExam 3 (-3.861): Ambos mostram uma redução significativa em PC2 em relação a Exam 1.
+Interações:
+sample.typehealth:ExamExam 2 (5.3826) e sample.typehealth:ExamExam 3 (4.3423): Esses valores sugerem que o impacto dos exames sobre PC2 difere entre health e disease, sendo significativo para ambos os exames, com p-values menores que 0.05.
+Resumo e Conclusão
+Correlação Temporal: Ambos os modelos exibem uma correlação temporal negativa, sugerindo que os valores de PC1 e PC2 têm uma tendência inversa entre os exames consecutivos. Isso valida a decisão de incluir a estrutura AR(1).
+Efeitos de sample.type e Exam: Em ambos os modelos, sample.type (health vs. disease) e Exam (tempo) influenciam significativamente os valores de PC1 e PC2.
+Interações: As interações entre sample.type e Exam são estatisticamente significativas para PC2, mas não para PC1. Isso sugere que o efeito do tempo (Exam) varia mais entre health e disease para PC2 do que para PC1.
+Esses resultados indicam que a inclusão da correlação temporal foi apropriada para capturar a dependência temporal nos dados e que tanto sample.type quanto Exam são fatores importantes que afetam as variações em PC1 e PC2.
+
+### Verificando a heterocedasticidade do dado
+```{r het, eval=F, echo=F}
+within_seq_means<-apply(t(seq_counts),2,mean)
+within_seq_vars<-apply(t(seq_counts),2,var)
+plot(within_seq_means,within_seq_vars,log='xy',
+    main='Heteroskedastic Data',
+    xlab='Mean # Counts',
+    ylab='Var # Counts')
+```
+
+Antes de podermos agrupar a dinâmica temporal, devemos ter certeza de que as espécies são intercomparáveis. 
+Precisamos realizar etapas de normalização para garantir a intercomparabilidade entre as espécies.
+Dito de outra forma, os dados de contagem são heterocedásticos - a média está correlacionada com a variância.
+
+A variância (na quantidade de vezes que uma ASV aparece) está correlacionada à contagem média. 
+Este atributo (comum para este tipo de dado) viola a suposição de variância constante, que é necessário para modelagem linear padrão. Para usar z-score para comparações e reduzir a tendência de nossas séries temporais (uma espécie de modelo linear), temos que lidar com isso.
+
+### Verificando a heterocedasticidade do dado após a estabilização das variâncias
+```{r het_pos, eval=F, echo=F}
+## Vamos estabilizar as variâncias para que elas não se correlacionem mais com as abundâncias.
+transformed_counts<-DESeq2::varianceStabilizingTransformation(as.matrix(seq_counts))
+
+## Conferindo o impacto da transformação
+within_trans_means<-apply(transformed_counts,1,mean)
+within_trans_vars<-apply(transformed_counts,1,var)
+# Plot:
+plot(within_trans_means,within_trans_vars)
+```
+Agora a maioria das variâncias são as mesmas entre ASVs. 
+Isso significa que os dados são mais intercomparáveis usando uma transformação de z-score + detrending.
+Como o objetivo é identificar padrões temporais repetidos, precisamos remover tendências que não estamos considerando, ou seja, tendências lineares.
+
+```{r detrend, eval=F, echo=F}
+transformed_detrended<-apply(transformed_counts,1,pracma::detrend)
+
+# Agora redimensionamos para que os números sejam novamente intercomparáveis e tratar a sobredispersão
+trans_dt_scaled<-apply(transformed_detrended,2,scale)
+rownames(trans_dt_scaled)<-colnames(transformed_counts) #Repondo rownames
+
+#Comparando a distribuição dos dados ao longo de cada etapa do pipeline – observe como quando chegamos ao z-score estamos mais próximos de um padrão normal
+hist(transformed_counts,
+    main='VST Sequence Count Observations',
+    xlab='# Total Observations',
+    ylab='Frequency')
+hist(transformed_detrended,
+    main='VST+Detrended Data',
+    xlab='Total Observations Accounting for Linear Trends',
+    ylab='Frequency')
+hist(trans_dt_scaled,
+    main='VST+Detrended+Scaled Data (Z-scores)',
+    xlab='Expression Level Relative to per-ASV Avg',
+    ylab='Frequency')
+
+```
+
+Agora vamos gerar as matrizes de distância para o agrupamento:
+```{r clust_eval, eval=F, echo=F}
+#Vamos usar a distância euclideana
+temporal_dmat<-dist(t(trans_dt_scaled))
+
+#Setar o range de clusters a ser testado
+n_clusts<-2:10
+
+#Primeiro, a clássica clusterização hierárquica aglomerativa
+hc_full_cluster<-hclust(temporal_dmat)
+hc_clusts<-lapply(n_clusts,function(x) cutree(hc_full_cluster,x))
+
+#Agora, k-medoids, também muito popular para clusterização
+kmed_clusts<-lapply(n_clusts, function(x) cluster::pam(temporal_dmat,k=x))
+
+#Comparando os desfechos dos clusters
+hc_stats<-lapply(hc_clusts,function(x) fpc::cluster.stats(temporal_dmat,
+                                                          clustering=x))
+kmed_stats<-lapply(kmed_clusts, function(x) fpc::cluster.stats(temporal_dmat,
+                                                             clustering=x$clustering))
+
+#Função auxiliar para reduzir a redundância
+ # Essencialmente, tudo o que esta função faz é implementar uma função (func) em uma lista e forçar a saída para um vetor de coluna (isso será útil quando quisermos criar um quadro de dados)
+ripping_stats<-function(list,func){
+   output<-do.call(rbind,lapply(list,func))
+  return(output)
+}
+func_list<-rep(list(function(x) x$cluster.number,
+                function(x) x$within.cluster.ss,
+                function(x) x$avg.silwidth,
+                function(x) x$ch),2)
+stats_list<-rep(list(hc_stats,kmed_stats),each=4)
+collected_stats<-purrr::map2(stats_list,func_list,ripping_stats)
+nclusts<-rep(n_clusts,length(collected_stats))
+method<-rep(c('hc_agg','kmed'),each=length(n_clusts)*length(collected_stats)/2)
+ind_name<-rep(c('n','ss','sil','ch'),each=length(n_clusts)) %>%
+  rep(2)
+
+#Coletando os outputs para plot
+index_frame<-data.frame(index=do.call(rbind,collected_stats),
+                        nc=nclusts,
+                        Method=method,
+                        ind=ind_name)
+index_frame %>%
+  filter(ind=='ss') %>%
+  ggplot(aes(x=nc,y=index,col=Method)) +
+  geom_point() +
+  geom_line(aes(group=Method)) +
+  ylab('Within Cluster Sum Square Error') +
+  xlab('Number Clusters')+
+  theme_bw()
+```
+
+Interpretação do plot:                    
+À medida que adicionamos mais clusters (yaxis), queremos que a soma quadrada do erro diminua
+À medida que permitimos mais clusters, somos capazes de descrever mais a variabilidade nos dados, então o erro da soma quadrada diminui.
+trade-off - sempre diminuirá quando você adicionar clusters, mas queremos adicionar o menor número possível de clusters, portanto, neste exemplo kmed > hc para qualquer quantidade de clusters: kmed tem menos erros. Portanto, continuaremos usando a abordagem kmed.
+
+### Plotando os índices de Calinski-Harabasz para cada cluster. Desejamos que este número seja elevado.
+```{r ch_eval, eval=F, echo=F}
+index_frame %>%
+  filter(ind=='ch') %>%
+  ggplot(aes(x=nc,y=index,col=Method)) +
+  geom_point() +
+  geom_line(aes(group=Method)) +
+  ylab('C-H Stat') +
+  xlab('Number Clusters')+
+theme_bw()
+```
+O valor ideal de clusters é geralmente aquele que maximiza o índice Calinski-Harabasz, ou seja, onde o valor do índice é mais alto.
+
+Perfil silhueta (Silhouette profile): avalia a variabilidade entre as espécies dentre os clusters selecionados
+```{r sil_prof, eval=F, echo=TRUE}
+## Extraindo o perfil para o número de clusters selecionado
+silhouette_profile_kmed8<-cluster::silhouette(kmed_clusts[[1]]) #Ajustar o número nos colchetes - n de clusters -1
+## Reformatando
+silhouette_frame<-data.frame(cluster=silhouette_profile_kmed8[,1],
+                             neighbor=silhouette_profile_kmed8[,2],
+                             dist=silhouette_profile_kmed8[,3],
+                             otu_id=rownames(silhouette_profile_kmed8))
+
+## Classificando por cluster e por largura da silhueta
+new_silframe<-silhouette_frame %>%
+  arrange(dist) %>%
+  group_by(cluster) %>%
+  mutate(idno=1:n(),
+         tot_num=n())
+
+## Plotando o perfil silhueta para as ASVs em cada cluster
+ggplot(new_silframe,aes(x=idno,y=dist))+
+  geom_bar(stat='identity') +
+  coord_flip() +
+  ggtitle('Silhouette Profiles for Individual Clusters') +
+  facet_wrap(~cluster)
+```
+
+Para interpretar os perfis de silhueta, podemos comparar a largura (eixo x) e a altura (eixo y) de cada perfil. Por exemplo, o cluster 2 é o mais 'alto', o que significa que possui um maior número de ASVs, e o mais largo, o que significa que possui um maior número de ASVs em contagens intermediárias.   
+Fique atento às espécies com distâncias de silhueta negativas - isso significa que elas têm um vizinho próximo que pertence a um cluster diferente e, portanto, pode ser apenas marginalmente semelhante ao seu cluster como um todo.
+
+## Partitioning about medoids (PAM) or k-medoids
+Qual é a composição taxonômica de cada um dos clusters?
+## Para dar sentido ecológico aos aglomerados temporais, podemos extrair uma espécie representativa e usar seu sinal ao longo do tempo para resumir as tendências temporais em todo o cluster
+```{r PAM , eval=F, echo=F}
+#Extraindo os medoids conforme o n-1 de clusters
+medoid_otus<-kmed_clusts[[1]]$medoids
+
+## Extraindo as séries temporais
+medoid_dynamics<-trans_dt_scaled[,medoid_otus]
+
+# Utilizando o output:
+head(silhouette_frame)
+
+# Podemos reconstruir a composição taxonômica de cada um desses clusters
+range(silhouette_frame$cluster) # n=x número de clusters
+
+# Juntando informações do cluster com informações taxonômicas
+#colnames(tax_key)[1]<-"asv_id"
+tax_key <- cbind(asv_id = rownames(tax_key), tax_key)
+silhouette_frame <- cbind(asv_id = rownames(silhouette_frame), silhouette_frame)
+tax_bycluster<-left_join(silhouette_frame, tax_key, by="asv_id")
+head(tax_bycluster[1:2,])
+
+# Resumindo os táxons com informações do cluster
+tax_bycluster_sum<-tax_bycluster %>%
+    group_by(cluster, Genus) %>%
+    summarise(richness =  n()) %>% #Riqueza
+    group_by(Genus) %>%
+    mutate(n_per_tax=sum(richness)) %>% #Descubra o número total de ASVs atribuídos a cada táxon
+    as.data.frame
+#tax_bycluster_sum$Taxa[which(tax_bycluster_sum$Taxa=='Firmicutes')]<-'Firmicutes' # VER
+head(tax_bycluster_sum)
+
+# Plotando a diferença taxonômica de cluster para cluster
+# Os valores são iguais ao número total de ASVs pertencentes a cada grupo taxonômico
+tax_color<-c("#67000d","#e31a1c","#dd3497","#fcbba1","#fed976","#fc8d59","#a63603","#addd8e","#7f2704","#238b45","#a1d99b","#081d58","#1f78b4","#a6cee3","#8c6bb1","#9e9ac8","#984ea3","#081d58","#662506","#ffffff","#969696","#525252","#000000")
+#
+tax_by_cluster_fig <- ggplot(tax_bycluster_sum, aes(x=cluster, y=richness, fill=Genus))+
+    geom_bar(color="black", stat="identity")+
+    coord_flip()+
+    scale_fill_brewer(palette='Set3')+
+    theme_minimal()+
+    scale_x_continuous(breaks=1:6,labels=as.character(1:6),name='Cluster #')+
+    scale_y_continuous(name='# Genus')+
+    theme(legend.position='bottom',text=element_text(size=18))+ 
+    guides(fill=guide_legend(nrow=3,byrow=TRUE))
+
+#Salvando
+FileName <- paste(Clustering,"/Cluster membership.pdf", sep = "")
+ggsave(FileName, plot = tax_by_cluster_fig, width = 180, height = 170, units = "mm", dpi = 300)
+
+#Salvando
+FileName <- paste(Clustering,"/Cluster membership.png", sep = "")
+ggsave(FileName, plot = tax_by_cluster_fig, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(Clustering,"/Cluster membership.xlsx", sep = "")
+write_xlsx(tax_bycluster_sum,FileName)
+
+tax_by_cluster_fig
+```
+
+### Demonstrando a dinâmica de medoid para cada cluster
+```{r pam2, eval=F, echo=F}
+
+medoid_dyn_long <- as.data.frame(t(medoid_dynamics)) %>%
+  mutate(asv_id = colnames(medoid_dynamics),
+         clust_num = 1:2) %>%
+  pivot_longer(
+    cols = `H11`:`H35`,  # Especificando as colunas a serem convertidas para o formato longo
+    names_to = "sampleID",   # Nome da nova coluna que armazenará os nomes das colunas originais
+    values_to = "z_score")    # Nome da nova coluna que armazenará os valores
+  
+medoid_dyn_long <- medoid_dyn_long %>%
+  left_join(samdf %>% select(sampleID, Exam), by = "sampleID")
+
+# Estamos plotando o eixo y como pontuações z para que as transcrições com diferentes níveis de linha de base sejam mais facilmente intercomparáveis. Leia um eixo y de pontuação z assim:
+# 0 é o nível médio de transcrição
+# números negativos são números de transcrições abaixo da média
+# números positivos são níveis de transcrições acima da média
+# 1 unidade está a 1 desvio padrão da média (portanto, um valor de 1 corresponde à média + 1dp, -1 é média-1dp)
+
+# Primeiro, obtenha os valores únicos da coluna Exam
+unique_exams <- unique(medoid_dyn_long$Exam)
+
+# Crie a sequência de breaks com base no número de valores únicos
+breaks_seq <- seq_along(unique_exams)  # Isso gera uma sequência de 1 até o número de valores únicos
+
+# Agora, ajuste o ggplot
+medoid_dyn_fig <- ggplot() +
+  geom_point(size=4,
+             shape=21, 
+             color="white", 
+             aes(fill=factor(clust_num),
+                 x=Exam,
+                 y=z_score),
+             data=medoid_dyn_long) +
+  geom_line(data=medoid_dyn_long,
+            aes(x=Exam,
+                y=z_score,
+                group=asv_id,
+                col=factor(clust_num)), size=1.25, linetype=5) +
+  facet_wrap(~clust_num, ncol=2) +
+  scale_color_brewer(palette='Set2', name='Cluster #') +
+  scale_fill_brewer(palette='Set2', guide=FALSE) +
+  scale_x_discrete(breaks=breaks_seq, labels=unique_exams) +  # Ajuste aqui
+  scale_y_continuous(name='Z-score Expression', limits=c(-2, 4.5)) +
+  theme(axis.text.x=element_text(angle=0, hjust=0.5, size=18),
+        panel.background=element_rect(fill='white'),
+        panel.grid.major=element_line(color='gray'),
+        axis.title.x=element_blank(),
+        text=element_text(size=18)) +
+  geom_rect(data=data.frame(ymin=rep(-2, length(unique_exams)),
+                             ymax=rep(4.5, length(unique_exams)),
+                             xmin=breaks_seq,
+                             xmax=breaks_seq),
+            aes(xmin=xmin, ymin=ymin, xmax=xmax, ymax=ymax),
+            col='gray',
+            alpha=0.25)
+
+# Salvando
+FileName <- paste(Clustering,"/Representative taxon time series for each cluster.pdf", sep = "")
+ggsave(FileName, plot = medoid_dyn_fig, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Salvando
+FileName <- paste(Clustering,"/Representative taxon time series for each cluster.png", sep = "")
+ggsave(FileName, plot = medoid_dyn_fig, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(Clustering,"/Representative taxon time series for each cluster.xlsx", sep = "")
+write_xlsx(medoid_dyn_long,FileName)
+
+medoid_dyn_fig
+```
+
+### Grouped plot
+```{r pam_plot, eval=F, echo=F}
+library(ggpubr)
+pam_plot <- ggarrange(tax_by_cluster_fig, medoid_dyn_fig, nrow = 1, ncol = 2, labels = c("a", "b"))
+pam_plot
+
+# Salvando
+FileName <- paste(Clustering,"/PAM plot.pdf", sep = "")
+ggsave(FileName, plot = pam_plot, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Salvando
+FileName <- paste(Clustering,"/PAM plot.png", sep = "")
+ggsave(FileName, plot = pam_plot, width = 180, height = 170, units = "mm", dpi = 300)
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+
+#########################################################################################
+
+# Interpolation (Spline)
+## Preparing the data
+```{r spline, eval=FALSE, echo=F}
+library(splinectomeR)
+library(phyloseq)
+library(dplyr)
+library(tibble)
+library(ggplot2)
+library(reshape2)
+library(tidyr)
+library(vegan)
+
+path <- '/home/otavio/Projects/Miller_et_al_2024_gengivitis/Analysis/'
+spline = paste(path,"/spline/",sep = "")
+dir.create(spline)
+
+ps0 <- readRDS("ps1.dna.genus.rds")
+ps <- transform_sample_counts(ps0, function(x) x/sum(x))
+
+# Verificar as variáveis no objeto phyloseq
+sample_data(ps)$patientID <- as.factor(sample_data(ps)$patientID)
+sample_data(ps)$sample.type <- as.factor(sample_data(ps)$sample.type)
+sample_data(ps)$Exam <- as.numeric(sample_data(ps)$Exam)  # Converter para numérico se necessário
+
+# Extrair a tabela de abundância
+otu_table <- as.data.frame(otu_table(ps))
+
+# Transpor a tabela se necessário (caso as amostras estejam nas colunas)
+if (taxa_are_rows(ps)) {
+  otu_table <- t(otu_table)
+}
+
+# Adicionar metadados
+metadata <- sample_data(ps)
+otu_table <- cbind(metadata, otu_table)
+```
+
+## Trend analysis
+```{r trendyspliner, eval=FALSE, echo=F}
+# Análise de tendência para o grupo 'health'
+result_health <- trendyspliner(
+  data = otu_table,
+  x = 'Exam',
+  y = 'Abundance',  # Substitua pelo nome da coluna de abundância específica
+  cases = 'patientID',
+  category = 'sample.type',
+  group = 'health',
+  perms = 1000
+)
+
+# Análise de tendência para o grupo 'disease'
+result_disease <- trendyspliner(
+  data = otu_table,
+  x = 'Exam',
+  y = 'Abundance',  # Substitua pelo nome da coluna de abundância específica
+  cases = 'patientID',
+  category = 'sample.type',
+  group = 'disease',
+  perms = 1000
+)
+
+# Verificar os p-valores
+result_health$pval
+result_disease$pval
+```
+
+## Checking statistical differences between groups through time
+```{r permuspliner, eval=FALSE, echo=F}
+# Análise de diferença entre 'health' e 'disease'
+result_comparison <- permuspliner(
+  data = otu_table,
+  x = 'Exam',
+  y = 'Abundance',  # Substitua pelo nome da coluna de abundância específica
+  cases = 'patientID',
+  category = 'sample.type',
+  groups = c('health', 'disease'),
+  perms = 1000
+)
+
+# Verificar o p-valor
+result_comparison$pval
+
+```
+
+### Plotting
+```{r permuspliner_plot, eval=FALSE, echo=F}
+# Análise de diferença entre 'health' e 'disease'
+result_comparison <- permuspliner(
+  data = otu_table,
+  x = 'Exam',
+  y = 'Abundance',  # Substitua pelo nome da coluna de abundância específica
+  cases = 'patientID',
+  category = 'sample.type',
+  groups = c('health', 'disease'),
+  perms = 1000
+)
+
+# Verificar o p-valor
+result_comparison$pval
+```
+
+###################################################################################
+
+# Differential Abundance (MaAsLin2)
+## Genus level
+```{r diff_abun_maaslin_genus, eval=F, echo=F}
+path <- '/home/otavio/Projects/Miller_et_al_2024_gengivitis/Analysis/'
+Dif_abundance_g = paste(path,"/Differential_abundance_genus/",sep = "")
+dir.create(Dif_abundance_g)
+
+#Importando o objeto phyloseq
+ps0 <- readRDS("ps1.dna.genus.rds")
+ps <- format_to_besthit(ps0)
+
+#Preparing the feature table
+# Extrair a tabela de abundâncias
+feature_table <- as.data.frame(otu_table(ps))
+
+#Extraindo os metadados
+metadata <- microbiome::meta(ps)
+
+# Verificar se as amostras estão nas colunas; se sim, transpor a tabela
+if (taxa_are_rows(ps)) {
+  feature_table <- t(feature_table)
+}
+
+# Executar o MaAsLin2
+fit_data <- Maaslin2(
+    input_data = feature_table,
+    input_metadata = metadata,
+    output = Dif_abundance_g,
+    fixed_effects = c("sample.type", "Exam", "PPD_mean", "CAL_mean", 
+                      "VPI_Site_majority", "MBI_Site_majority", "BoP_Site_majority"),
+    random_effects = "patientID",
+    reference = "sample.type,health;Exam,Exam 1;",
+    normalization = "CLR",
+    transform = "LOG",      # Transformação logarítmica
+    analysis_method = "LM", # Modelo Linear
+    min_prevalence = 0.1,
+    min_abundance = 0.0001,
+    correction = "BH",
+    standardize = TRUE,
+    cores = 12
+)
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+
+## Genus level - interaction
+```{r diff_abun_maaslin_genus, eval=F, echo=F}
+path <- '/home/otavio/Projects/Miller_et_al_2024_gengivitis/Analysis/'
+Dif_abundance_g_int = paste(path,"/Differential_abundance_genus_interaction/",sep = "")
+dir.create(Dif_abundance_g_int)
+
+#Importando o objeto phyloseq
+ps0 <- readRDS("ps1.dna.genus.rds")
+ps <- format_to_besthit(ps0)
+
+#Preparing the feature table
+# Extrair a tabela de abundâncias
+feature_table <- as.data.frame(otu_table(ps))
+
+#Extraindo os metadados
+metadata <- microbiome::meta(ps)
+
+# Criando uma variável de interação (Maaslin2 não aceita interação na modelagem)
+metadata$sample_exam_interaction <- interaction(metadata$sample.type, metadata$Exam)
+
+# Verificar se as amostras estão nas colunas; se sim, transpor a tabela
+if (taxa_are_rows(ps)) {
+  feature_table <- t(feature_table)
+}
+
+# Executar o MaAsLin2
+fit_data <- Maaslin2(
+    input_data = feature_table,
+    input_metadata = metadata,
+    output = Dif_abundance_g_int,
+    fixed_effects = c("sample.type", "Exam", "sample_exam_interaction", "PPD_mean", "CAL_mean", 
+                      "VPI_Site_majority", "MBI_Site_majority", "BoP_Site_majority"),
+    random_effects = "patientID",
+    reference = "sample.type,health;Exam,Exam 1;sample_exam_interaction,health.Exam 1",
+    normalization = "CLR",
+    transform = "LOG",      # Transformação logarítmica
+    analysis_method = "LM", # Modelo Linear
+    min_prevalence = 0.1,
+    min_abundance = 0.0001,
+    correction = "BH",
+    standardize = TRUE,
+    cores = 12
+)
+
+# clean environment
+rm(list = ls(all = TRUE))
+
+#Quando você inclui um termo de interação em um modelo estatístico, está permitindo que o efeito de uma variável sobre a variável resposta dependa do nível de outra variável. Essa inclusão altera a interpretação dos coeficientes das variáveis principais (também chamadas de efeitos principais) no modelo.
+
+#Efeitos Principais sem Interação:
+
+#Em um modelo sem termos de interação, os coeficientes das variáveis independentes representam o efeito médio dessas variáveis na variável resposta, assumindo que esse efeito é constante em todos os níveis das outras variáveis.
+
+#Efeitos Principais com Interação:
+
+#Ao adicionar um termo de interação, você está modelando a possibilidade de que o efeito de uma variável dependa do nível de outra variável. Nesse caso, os coeficientes dos efeitos principais não representam mais o efeito isolado de cada variável, mas sim o efeito quando a outra variável envolvida na interação está no nível de referência.
+
+#Impacto na Significância Estatística:
+
+#A inclusão de termos de interação pode alterar a significância estatística dos efeitos principais. Isso ocorre porque o modelo agora está atribuindo parte da variação explicada às interações entre as variáveis, o que pode reduzir a variância atribuída aos efeitos principais isoladamente. Consequentemente, uma variável que era significativa sem a interação pode não ser mais significativa com a interação, e vice-versa.
+
+#Interpretação dos Coeficientes:
+
+#Efeito Principal: Representa o efeito da variável independente na variável resposta quando todas as outras variáveis (e interações) estão nos seus níveis de referência.
+
+#Interação: Indica como o efeito de uma variável na resposta muda conforme o nível da outra variável.
+
+#Considerações Importantes:
+
+#Multicolinearidade: A inclusão de termos de interação aumenta o número de preditores no modelo, o que pode introduzir multicolinearidade e afetar a estabilidade das estimativas dos coeficientes.
+
+#Complexidade do Modelo: Modelos com interações são mais complexos e requerem amostras maiores para estimativas precisas.
+
+#Interpretação Cuidadosa: A interpretação de modelos com interações deve ser feita com cautela, considerando os níveis de referência e a possibilidade de efeitos condicionais.
+```
+## Family level
+```{r diff_abun_maaslin_family, eval=F, echo=F}
+path <- '/home/otavio/Projects/Miller_et_al_2024_gengivitis/Analysis/'
+Dif_abundance_f = paste(path,"/Differential_abundance_family/",sep = "")
+dir.create(Dif_abundance_f)
+
+#Importando o objeto phyloseq
+ps0 <- readRDS("ps1.dna.family.rds")
+ps <- format_to_besthit(ps0)
+
+#Preparing the feature table
+# Extrair a tabela de abundâncias
+feature_table <- as.data.frame(otu_table(ps))
+
+#Extraindo os metadados
+metadata <- microbiome::meta(ps)
+
+# Verificar se as amostras estão nas colunas; se sim, transpor a tabela
+if (taxa_are_rows(ps)) {
+  feature_table <- t(feature_table)
+}
+
+# Executar o MaAsLin2
+fit_data <- Maaslin2(
+    input_data = feature_table,
+    input_metadata = metadata,
+    output = Dif_abundance_f,
+    fixed_effects = c("sample.type", "Exam", "PPD_mean", "CAL_mean", 
+                      "VPI_Site_majority", "MBI_Site_majority", "BoP_Site_majority"),
+    random_effects = c("patientID"),
+    reference = "sample.type,health;Exam,Exam 1;",
+    normalization = "CLR",
+    transform = "LOG",      # Transformação logarítmica
+    analysis_method = "LM", # Modelo Linear
+    min_prevalence = 0.1,
+    min_abundance = 0.0001,
+    correction = "BH",
+    standardize = TRUE,
+    cores = 12
+)
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+
+## Phylum level
+```{r diff_abun_maaslin_phy, eval=F, echo=F}
+path <- '/home/otavio/Projects/Miller_et_al_2024_gengivitis/Analysis/'
+Dif_abundance_p = paste(path,"/Differential_abundance_phylum/",sep = "")
+dir.create(Dif_abundance_p)
+
+#Importando o objeto phyloseq
+ps0 <- readRDS("ps1.dna.phy.rds")
+ps <- format_to_besthit(ps0)
+
+#Preparing the feature table
+# Extrair a tabela de abundâncias
+feature_table <- as.data.frame(otu_table(ps))
+
+#Extraindo os metadados
+metadata <- microbiome::meta(ps)
+
+# Verificar se as amostras estão nas colunas; se sim, transpor a tabela
+if (taxa_are_rows(ps)) {
+  feature_table <- t(feature_table)
+}
+
+# Executar o MaAsLin2
+fit_data <- Maaslin2(
+    input_data = feature_table,
+    input_metadata = metadata,
+    output = Dif_abundance_p,
+    fixed_effects = c("sample.type", "Exam", "PPD_mean", "CAL_mean", 
+                      "VPI_Site_majority", "MBI_Site_majority", "BoP_Site_majority"),
+    random_effects = c("patientID"),
+    reference = "sample.type,health;Exam,Exam 1;",
+    normalization = "CLR",
+    transform = "LOG",      # Transformação logarítmica
+    analysis_method = "LM", # Modelo Linear
+    min_prevalence = 0.1,
+    min_abundance = 0.0001,
+    correction = "BH",
+    standardize = TRUE,
+    cores = 12
+)
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+
+##################################################################################
+
+# Differential abundance analysis (LinDA)
+```{r diff_abun_init, eval=F, echo=F}
+path <- '/home/otavio/Projects/Miller_et_al_2024_gengivitis/Analysis/'
+Dif_abundance = paste(path,"/Differential_abundance/",sep = "")
+dir.create(Dif_abundance)
+
+library(MicrobiomeStat)
+
+ps <- readRDS("ps1.dna.genus.rds")
+
+# Certificar-se de que as variáveis estão no formato adequado (factor)
+sample_data(ps)$patientID <- as.factor(sample_data(ps)$patientID)
+sample_data(ps)$sample.type <- as.factor(sample_data(ps)$sample.type)
+sample_data(ps)$Exam <- as.factor(sample_data(ps)$Exam)
+
+#Ajustando uma ponderação temporal
+sample_data(ps)$time_trend <- as.numeric(sample_data(ps)$Exam) - 1  # Por exemplo, Exam 1 = 0, Exam 2 = 1, Exam 3 = 2
+sample_data(ps)$weighted_interaction <- interaction(sample_data(ps)$sample.type, sample_data(ps)$time_trend)
+
+# Executar a análise de abundância diferencial longitudinal
+result <- MicrobiomeStat::linda(
+  phyloseq.obj = ps,
+  formula = "~ sample.type + Exam + weighted_interaction + (1|patientID)", #Adicionei um spline 
+  alpha = 0.05,
+  prev.filter = 0,
+  mean.abund.filter = 0,
+  p.adj.method = "BH",
+  n.cores = 12
+)
+
+variables.plot <- result$variables
+
+# Plotar os resultados da análise
+linda.plots <- linda.plot(result, 
+           variables.plot = variables.plot,
+           titles = c("Health x Disease", "Exam 1 x Exam 2", "Exam 2 x Exam 3", "Health x Disease + Exam 1 x Exam 2", "Health x Disease + Exam 1 x Exam 3"),
+           directory = Dif_abundance,
+           lfc.cut = 1,
+           alpha = 0.05,
+           width = 12,
+           height = 10,
+           legend = TRUE)
+
+linda.plots
+```
+
+# Differential abundance analysis (ANCOMBC2) - as figuras do ANCOMBC2 ainda não estão prontas para plotagem longitudinal
+```{r diff_abun_init, eval=F, echo=F}
+path <- '/home/otavio/Projects/Miller_et_al_2024_gengivitis/'
+Dif_abundance = paste(path,"/Differential_abundance/",sep = "")
+dir.create(Dif_abundance)
+
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, comment = NA, 
+                      fig.width = 6.25, fig.height = 5)
+library(ANCOMBC)
+library(tidyverse)
+library(DT)
+options(DT.options = list(
+  initComplete = JS("function(settings, json) {",
+  "$(this.api().table().header()).css({'background-color': 
+  '#000', 'color': '#fff'});","}")))
+```
+
+## Preparing the data
+```{r diff_abun_data, eval=F, echo=F}
+ps <- readRDS("ps1.dna.rds")
+```
+
+## Run ANCOMBC2 function
+```{r run_ANCOMBC2, eval=FALSE, echo=FALSE}
+# Atualizações frequentes e mudanças no algoritmo, incluindo no output. Revisar antes de usar!
+path <- '/home/otavio/Projects/Peruzzo_et_al_2024/Analysis/'
+Dif_abundance = paste(path,"/Differential_abundance/",sep = "")
+dir.create(Dif_abundance)
+set.seed(123)
+# It is recommended that users utilize the default value of B, 
+# which is 100, or larger values for optimal performance.
+output_genus = ancombc2(data = ps, assay_name = "counts", tax_level = "Genus", #tax_level - aglomeração taxonômica
+                  fix_formula = "Group + Age..Years. + Gender + Catelicidine..ng.mL. + VitaminD..ng.mL.", rand_formula = NULL, #fix_formula - modelar as co-variáveis
+                  p_adj_method = "BH", pseudo_sens = TRUE,
+                  prv_cut = 0.1, lib_cut = 1000, s0_perc = 0.05, #prv_cut - ponto de corte de prevalência 
+                  group = "Group", struc_zero = TRUE, neg_lb = TRUE, #group - variável primária
+                  alpha = 0.05, n_cl = 20, verbose = TRUE,
+                  global = TRUE, pairwise = TRUE, dunnet = TRUE, trend = FALSE, #Tipo de análise
+                  iter_control = list(tol = 1e-2, max_iter = 20, 
+                                      verbose = TRUE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = lme4::lmerControl(),
+                  mdfdr_control = list(fwer_ctrl_method = "holm", B = 100))
+
+output_family = ancombc2(data = ps, assay_name = "counts", tax_level = "Family", #tax_level - aglomeração taxonômica
+                  fix_formula = "Group + Age..Years. + Gender + Catelicidine..ng.mL. + VitaminD..ng.mL.", rand_formula = NULL, #fix_formula - modelar as co-variáveis
+                  p_adj_method = "BH", pseudo_sens = TRUE,
+                  prv_cut = 0.1, lib_cut = 1000, s0_perc = 0.05, #prv_cut - ponto de corte de prevalência 
+                  group = "Group", struc_zero = TRUE, neg_lb = TRUE, #group - variável primária
+                  alpha = 0.05, n_cl = 20, verbose = TRUE,
+                  global = TRUE, pairwise = TRUE, dunnet = TRUE, trend = FALSE, #Tipo de análise
+                  iter_control = list(tol = 1e-2, max_iter = 20, 
+                                      verbose = TRUE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = lme4::lmerControl(),
+                  mdfdr_control = list(fwer_ctrl_method = "holm", B = 100))
+
+output_phylum = ancombc2(data = ps, assay_name = "counts", tax_level = "Phylum", #tax_level - aglomeração taxonômica
+                  fix_formula = "Group + Age..Years. + Gender + Catelicidine..ng.mL. + VitaminD..ng.mL.", rand_formula = NULL, #fix_formula - modelar as co-variáveis
+                  p_adj_method = "BH", pseudo_sens = TRUE,
+                  prv_cut = 0.1, lib_cut = 1000, s0_perc = 0.05, #prv_cut - ponto de corte de prevalência 
+                  group = "Group", struc_zero = TRUE, neg_lb = TRUE, #group - variável primária
+                  alpha = 0.05, n_cl = 20, verbose = TRUE,
+                  global = TRUE, pairwise = TRUE, dunnet = TRUE, trend = FALSE, #Tipo de análise
+                  iter_control = list(tol = 1e-2, max_iter = 20, 
+                                      verbose = TRUE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = lme4::lmerControl(),
+                  mdfdr_control = list(fwer_ctrl_method = "holm", B = 100))
+
+save(file = "ANCOMBC.RData", list = c("output_genus", "output_family", "output_phylum", "Dif_abundance", "path"))
+
+# clean environment
+#rm(list = ls(all = TRUE))
+```
+
+### Genus level
+#### Structural zeros 
+```{r struc_zeros, eval=T, echo=F}
+path <- '/home/otavio/Projects/Peruzzo_et_al_2024/Analysis/'
+Dif_abundance = paste(path,"/Differential_abundance/",sep = "")
+load('ANCOMBC.RData')
+tab_zero = output_genus$zero_ind
+tab_zero %>%
+    datatable(caption = "The detection of structural zeros on Genus level")
+FileName <- paste(Dif_abundance,"/Structural_zeros_genus.xlsx", sep = "")
+write_xlsx(tab_zero, FileName)
+```
+
+#### Primary analysis
+```{r ANCOMBC2_prim_analysis_genus, eval=T, echo=F}
+#As análises subsequentes são referentes a análise primária de abundância diferencial. Ainda existem as possibilidades da análise global, multiple pairwise comparisons, Dunnett's test e pattern analysis. Verificar scripts complementares.
+res_prim = output_genus$res
+```
+
+#### Results for group - heatmap
+```{r ANCOMBC2_prim_genus, eval=T, echo=F}
+# Inspecionar o output para verificar o nome das colunas e ajustar o script
+# Selecionar colunas relacionadas à variável 'Group'
+df_group = res_prim %>%
+    dplyr::select(taxon, contains("Group"))
+
+# Filtrar táxons com diferenças significativas entre 'Control' e 'Rosacea'
+df_fig_group1 = df_group %>%
+    dplyr::filter(diff_GroupRosacea == 1) %>%
+    dplyr::mutate(lfc1 = ifelse(diff_GroupRosacea == 1, 
+                                round(lfc_GroupRosacea, 2), 0)) %>%
+    tidyr::pivot_longer(cols = lfc1, 
+                        names_to = "group", values_to = "value") %>%
+    dplyr::arrange(taxon)
+
+df_fig_group2 = df_group %>%
+    dplyr::filter(diff_GroupRosacea == 1) %>%
+    dplyr::mutate(lfc1 = ifelse(passed_ss_GroupRosacea == 1 & diff_GroupRosacea == 1, 
+                                "aquamarine3", "black")) %>%
+    tidyr::pivot_longer(cols = lfc1, 
+                        names_to = "group", values_to = "color") %>%
+    dplyr::arrange(taxon)
+
+df_fig_group = df_fig_group1 %>%
+    dplyr::left_join(df_fig_group2, by = c("taxon", "group"))
+
+# Recode 'group' levels to meaningful labels
+df_fig_group$group = recode(df_fig_group$group, 
+                            `lfc1` = "Control - Rosacea")
+#df_fig_group$group = factor(df_fig_group$group, 
+                            #levels = c("Control - Rosacea")
+
+lo = floor(min(df_fig_group$value))
+up = ceiling(max(df_fig_group$value))
+mid = (lo + up)/2
+
+# Criar heatmap
+fig_group = df_fig_group %>%
+  ggplot(aes(x = group, y = taxon, fill = value)) + 
+  geom_tile(color = "black") +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                       na.value = "white", midpoint = mid, limit = c(lo, up),
+                       name = NULL) +
+  geom_text(aes(group, taxon, label = value, color = color), size = 4) +
+  scale_color_identity(guide = "none") +
+  labs(x = NULL, y = NULL, title = "Log Fold Changes: Control vs Rosacea") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Mostrar a figura 
+print(fig_group)
+
+# Definir o caminho e o nome do arquivo
+FileName <- paste(Dif_abundance, "/Primary_genus.xlsx", sep = "")
+# Salvar o dataframe res_prim em formato Excel
+write_xlsx(res_prim, FileName)
+
+# Salvar a figura em formato PDF
+FileName <- paste(Dif_abundance, "/Primary_genus.pdf", sep = "")
+ggsave(FileName, plot = fig_group, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Salvar a figura em formato PNG
+FileName <- paste(Dif_abundance, "/Primary_genus.png", sep = "")
+ggsave(FileName, plot = fig_group, width = 180, height = 170, units = "mm", dpi = 300)
+
+```
+Any taxon highlighted in green indicates its successful passage through the sensitivity analysis for pseudo-count addition.
+
+#### Results for Age
+```{r ANCOMBC2_Age_genus, eval=T, echo=F}
+# Selecionar colunas relacionadas à variável 'Age..Years.'
+df_age = res_prim %>%
+    dplyr::select(taxon, ends_with("Age..Years.")) 
+
+# Filtrar táxons com diferenças significativas e organizar os dados
+df_fig_age = df_age %>%
+    dplyr::filter(diff_Age..Years. == 1) %>% 
+    dplyr::arrange(desc(lfc_Age..Years.)) %>%
+    dplyr::mutate(direct = ifelse(lfc_Age..Years. > 0, "Positive LFC", "Negative LFC"),
+                  color = ifelse(passed_ss_Age..Years. == 1, "aquamarine3", "black"))
+
+# Ajustar os níveis do fator 'taxon' com base na ordem
+df_fig_age$taxon = factor(df_fig_age$taxon, levels = df_fig_age$taxon)
+
+# Ajustar os níveis do fator 'direct'
+df_fig_age$direct = factor(df_fig_age$direct, 
+                           levels = c("Positive LFC", "Negative LFC"))
+
+# Criar o gráfico de barras com erro padrão
+fig_age = df_fig_age %>%
+    ggplot(aes(x = taxon, y = lfc_Age..Years., fill = direct)) + 
+    geom_bar(stat = "identity", width = 0.7, color = "black", 
+             position = position_dodge(width = 0.4)) +
+    geom_errorbar(aes(ymin = lfc_Age..Years. - se_Age..Years., 
+                      ymax = lfc_Age..Years. + se_Age..Years.), 
+                  width = 0.2, position = position_dodge(0.05), color = "black") + 
+    labs(x = NULL, y = "Log fold change", 
+         title = "Log fold changes as one unit increase of age") + 
+    scale_fill_discrete(name = NULL) +
+    scale_color_discrete(name = NULL) +
+    theme_bw() + 
+    theme(plot.title = element_text(hjust = 0.5),
+          panel.grid.minor.y = element_blank(),
+          axis.text.x = element_text(angle = 60, hjust = 1,
+                                     color = df_fig_age$color))
+
+# Salvar a figura em formato PDF
+FileName <- paste(Dif_abundance, "/Age_genus.pdf", sep = "")
+ggsave(FileName, plot = fig_age, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Salvar a figura em formato PNG
+FileName <- paste(Dif_abundance, "/Age_genus.png", sep = "")
+ggsave(FileName, plot = fig_age, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Exibir o gráfico
+print(fig_age)
+```
+Any taxon highlighted in green indicates its successful passage through the sensitivity analysis for pseudo-count addition.
+
+ANCOMBC2 on family level
+
+ANCOMBC2 on phylum level
+
+## Interaction networks
+####################################################################
+
+## Feature selection/classification models
+#####################################################################
+
+## Other time-series related analyses
+
+####################################################################
+
+# PICRUSt2
+## Exporting the data
+```{r exp_picrust2, eval=FALSE, echo=FALSE}
+path <- '/home/otavio/Projects/Miller_et_al_2024_gengivitis/Analysis/'
+picrust2 = paste(path,"/Picrust2/",sep = "")
+dir.create(picrust2)
+
+ps <- readRDS("/home/otavio/Projects/Miller_et_al_2024_gengivitis/Analysis/ps1.dna.rds")
+
+# Exportar taxonomy table como "tax.txt" Somente necessário se for usar o qiime2
+tax<-as(tax_table(ps),"matrix")
+tax_cols <- colnames(tax)
+tax<-as.data.frame(tax)
+tax$taxonomy<-do.call(paste, c(tax[tax_cols], sep=";"))
+for(co in tax_cols) tax[co]<-NULL
+FileName <- paste(picrust2,"/tax.txt", sep = "")
+write.table(tax, FileName, quote=FALSE, col.names=FALSE, sep="\t")
+
+#Exportar o fasta das sequências
+sequences <- refseq(ps)
+sequences_char <- as.character(sequences)
+fasta_headers <- paste(">", names(sequences), sep="")
+fasta_content <- paste(fasta_headers, sequences_char, sep="\n")
+FileName <- paste(picrust2,"/sequences.fasta", sep = "")
+writeLines(fasta_content, FileName)
+
+# Exportar feature/OTU table
+# Formato biom file
+library(biomformat);packageVersion("biomformat")
+otu<-t(as(otu_table(ps),"matrix")) # 't' para transpor se taxa_are_rows=FALSE, que geralmente é o nosso caso
+#if taxa_are_rows=TRUE
+#otu<-as(otu_table(ps),"matrix"))
+otu_biom<-make_biom(data=otu)
+FileName <- paste(picrust2,"/otu_biom.biom", sep = "")
+write_biom(otu_biom,FileName)
+
+# Como txt (caso dê algum erro com o formato biom) a partir do dado de pré-processamento
+#write.table(t(seqtab), "seqtab.txt", sep="\t", row.names=TRUE, col.names=NA, quote=FALSE)
+#ou do objeto phyloseq, 't' se taxa_are_rows=FALSE (geralmente o nosso caso), sem 't' se taxa_are_rows=TRUE
+FileName <- paste(picrust2,"/seqtab.txt", sep = "")
+write.table(t(otu_table(ps), FileName,sep="\t", row.names=TRUE, col.names=NA, quote=FALSE)
+
+#Exportar metadados (se a sua tabela de metadados já está adequadamente formatada, pode usar ela em formato csv, mas como geralmente tratamos as variáveis dentro do objeto phyloseq, o ideal é exportar)
+metadata <- microbiome::meta(ps)
+FileName <- paste(picrust2,"/sample_metadata.txt", sep = "")
+write.table(metadata,FileName, sep="\t", row.names=FALSE, col.names=TRUE, quote=FALSE)
+
+# clean environment
+rm(list = ls(all = TRUE))
+#Os arquivos gerados devem ser utilizados para o pipeline do Picrust2 no terminal, e o output do Picrust2 deve ser utilizado nos chunks abaixo para análises e figuras.
+```
+
+## Metabolic Prediction - MetaCyc Pathways
+```{r picrust2_output_metacyc, eval=FALSE, echo=TRUE}
+# Carregue o dataset MetaCyc_pathway_map
+data("MetaCyc_pathway_map")
+
+path <- '/home/otavio/Projects/Miller_et_al_2024_gengivitis/Analysis/'
+picrust2_metacyc_maaslin = paste(path,"/Picrust2_metacyc_maaslin/",sep = "")
+dir.create(picrust2_metacyc_maaslin)
+
+ps <- readRDS("/home/otavio/Projects/Miller_et_al_2024_gengivitis/Analysis/ps1.dna.rds")
+
+# Carregue os dados de abundância funcional
+# Por exemplo, para dados de vias MetaCyc:
+metacyc_abundance <- read.table("/home/otavio/Projects/Miller_et_al_2024_gengivitis/Analysis/Picrust2/path_abun_unstrat.tsv", header = TRUE, row.names = 1, sep = "\t")
+
+# Adicione uma coluna com os IDs das vias em cada df
+metacyc_abundance$pathway_id <- rownames(metacyc_abundance)
+MetaCyc_pathway_map$pathway_name <- rownames(MetaCyc_pathway_map)
+
+#Anotando as rotas metabólicas
+# Mescle com o mapeamento para obter as descrições
+annotated_metacyc_abundance <- merge(
+  metacyc_abundance,
+  MetaCyc_pathway_map,
+  by.x = "pathway_id",
+  by.y = "pathway_name",
+  all.x = TRUE
+)
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(picrust2_metacyc_maaslin,"/Annotated metacyc abundances.xlsx", sep = "")
+write_xlsx(annotated_metacyc_abundance,FileName)
+
+# Ajuste os nomes das linhas para corresponder à coluna 'pathway'
+rownames(annotated_metacyc_abundance) <- annotated_metacyc_abundance$pathway
+
+# Remover as colunas não-numéricas do dataframe
+annotated_metacyc_abundance$pathway_id <- NULL
+annotated_metacyc_abundance$Superclass1 <- NULL
+annotated_metacyc_abundance$Superclass2 <- NULL
+annotated_metacyc_abundance$pathway <- NULL
+
+# Carregue a tabela de metadados
+metadata <- microbiome::meta(ps)
+
+# Executar o MaAsLin2
+fit_data <- Maaslin2(
+    input_data = annotated_metacyc_abundance,
+    input_metadata = metadata,
+    output = picrust2_metacyc_maaslin,
+    fixed_effects = c("sample.type", "Exam", "PPD_mean", "CAL_mean", 
+                      "VPI_Site_majority", "MBI_Site_majority", "BoP_Site_majority"),
+    random_effects = "patientID",
+    reference = "sample.type,health;Exam,Exam 1;",
+    normalization = "CLR",
+    transform = "LOG",      # Transformação logarítmica
+    analysis_method = "LM", # Modelo Linear
+    min_prevalence = 0.1,
+    min_abundance = 0,
+    correction = "BH",
+    standardize = TRUE,
+    cores = 12
+)
+
+```
+
+### MetaCyc Pathways Relative Abundance
+```{r metacyc_rel_abund, eval=FALSE, echo=TRUE}
+
+```
+
+### Pathway Heatmap
+```{r metacyc_pathway_heatmap, eval=FALSE, echo=TRUE}
+
+
+```
+
+### Session info
+```{r session_info, eval=TRUE, echo=TRUE}
+sessionInfo()
+```
