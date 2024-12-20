@@ -197,7 +197,7 @@ table(nchar(getSequences(seqtab)))
 ### 0.3.14 Track reads through the pipeline - este chunk gera a tabela de rastreabilidade das sequências ao longo do processo.
 ```{r track_reads, eval=TRUE, echo=TRUE}
 getN <- function(x) sum(getUniques(x))
-track <- cbind(out, sapply(dadaFs, getN),sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab))
+track <- as.data.frame(cbind(out, sapply(dadaFs, getN),sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab)))
 colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
 
 # Adiciona a coluna sampleID ao data frame track
