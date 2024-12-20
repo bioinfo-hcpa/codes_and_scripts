@@ -259,7 +259,7 @@ save(file = "Guerra_etal2024_preprocessing4.RData",list=c('out1', 'out2', 'out3'
 ### 0.3.8 Track reads through the pipeline - este chunk gera a tabela de rastreabilidade das sequências ao longo do processo.
 ```{r track_reads, eval=TRUE, echo=TRUE}
 #load('Guerra_etal2024_preprocessing4.RData')
-# Criar tabela de rastreamento de reads
+
 # Criar tabela de rastreamento de reads
 getN <- function(x) sum(getUniques(x))
 
@@ -267,18 +267,25 @@ getN <- function(x) sum(getUniques(x))
 track <- rbind(out1, out2, out3)
 
 #Combinar track com tabela agrupada após remoção de chimeras
-track.full <- cbind(track, rowSums(seqtab.all), rowSums(seqtab.nochim))
-
+track.full <- as.data.frame(cbind(track, rowSums(seqtab.all), rowSums(seqtab.nochim)))
+###################################################################################################################################################################
+#Se não tiver tabela de metadados pronta, executar as duas linhas de código abaixo. Se tiver, apagar essas duas linhas e usar o sampleID da tabela de metadados. 
+#ATENÇÃO! A ordem dos nomes da tabela de metadados e no objeto track devem ser os mesmos para que esse processo seja adequado. 
+###################################################################################################################################################################
 # Adiciona a coluna sampleID ao data frame track
-track$sampleID <- row.names(seqtab.nochim)
+track.full$sampleID <- row.names(seqtab.nochim)
 
 # Reordena as colunas para colocar sampleID como a primeira
-track <- track[, c("sampleID", setdiff(names(track), "sampleID"))]
-
+track.full <- track.full[, c("sampleID", setdiff(names(track.full), "sampleID"))]
+###################################################################################################################################################################
+# Se você tiver a tabela de metadados pronta e com as amostras na mesma ordem que o objeto track.full, execute as 3 linhas de código abaixo.
 # Importando o dado manualmente verificado e curado em formato csv
 samdf <- read.csv("samdf.csv") #samdf significa 'sample dataframe', e é o nome usado para a tabela de metadados. 
 
+# Utilizando a coluna sampleID do samdf (tabela de metadados) para o objeto track.full
 track.full <- cbind(samdf$sampleID, track.full)
+###################################################################################################################################################################
+#Nomeando as colunas 
 colnames(track.full) <- c("sampleID", "input", "filtered", "merged", "nochim")
 
 # Se quiser exportar para um arquivo Excel
