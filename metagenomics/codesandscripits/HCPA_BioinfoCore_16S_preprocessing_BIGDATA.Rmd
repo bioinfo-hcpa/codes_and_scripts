@@ -79,33 +79,50 @@ fnRs3 <- sort(list.files(path3, pattern="_R2", full.names = TRUE))
 ### 0.3.2 Plot Quality Profile
 ```{r q_plot, eval=FALSE, echo=TRUE}
 # Visualizar a qualidade dos arquivos de cada corrida. A qualidade não costuma variar muito entre as amostras de uma mesma corrida e 6 amostras é um bom número para visualização, mas, caso queira visualizar/avaliar mais amostras, mude o intervalo entre colchetes.
-plotQualityProfile(fnFs1[1:6]) + ggtitle("Fwd1")
-full.fwd.quality.plot1 <- plotQualityProfile(fnFs1[1:6]) + ggtitle("Fwd") #Entre chaves: coloque o intervalo total de amostras
+# Primeira corrida
+
+# FWD
+plotQualityProfile(fnFs1[1:20]) + ggtitle("Fwd1")
+full.fwd.quality.plot1 <- plotQualityProfile(fnFs1[1:20]) + ggtitle("Fwd") #Entre chaves: coloque o intervalo total de amostras
 #Salvando
 FileName <- paste(Preprocessing,"/Fwd Quality Plot1.pdf", sep = "")
 ggsave(FileName, plot = full.fwd.quality.plot1, width = 20, height = 20, units = "in", dpi = 300)
-plotQualityProfile(fnRs1[1:6]) + ggtitle("Rev1")
-full.rev.quality.plot1 <- plotQualityProfile(fnRs1[1:6]) + ggtitle("Rev") #Entre chaves: coloque o intervalo total de amostras
-#Salvando
+
+# REV
+plotQualityProfile(fnRs1[1:20]) + ggtitle("Rev1")
+full.rev.quality.plot1 <- plotQualityProfile(fnRs1[1:20]) + ggtitle("Rev") #Entre chaves: coloque o intervalo total de amostras
+# Salvando
 FileName <- paste(Preprocessing,"/Rev Quality Plot1.pdf", sep = "")
-ggsave(FileName, plot = full.rev.quality.plot, width = 20, height = 20, units = "in", dpi = 300)
-plotQualityProfile(fnFs2[1:6]) + ggtitle("Fwd2")
-full.fwd.quality.plot2 <- plotQualityProfile(fnFs2[1:6]) + ggtitle("Fwd") #Entre chaves: coloque o intervalo total de amostras
+ggsave(FileName, plot = full.rev.quality.plot1, width = 20, height = 20, units = "in", dpi = 300)
+
+# Segunda corrida
+
+# FWD
+plotQualityProfile(fnFs2[1:8]) + ggtitle("Fwd2")
+full.fwd.quality.plot2 <- plotQualityProfile(fnFs2[1:8]) + ggtitle("Fwd") #Entre chaves: coloque o intervalo total de amostras
 #Salvando
 FileName <- paste(Preprocessing,"/Fwd Quality Plot2.pdf", sep = "")
 ggsave(FileName, plot = full.fwd.quality.plot2, width = 20, height = 20, units = "in", dpi = 300)
-plotQualityProfile(fnRs2[1:6]) + ggtitle("Rev2")
-full.rev.quality.plot2 <- plotQualityProfile(fnRs2[1:6]) + ggtitle("Rev") #Entre chaves: coloque o intervalo total de amostras
+
+# REV
+plotQualityProfile(fnRs2[1:8]) + ggtitle("Rev2")
+full.rev.quality.plot2 <- plotQualityProfile(fnRs2[1:8]) + ggtitle("Rev") #Entre chaves: coloque o intervalo total de amostras
 #Salvando
 FileName <- paste(Preprocessing,"/Rev Quality Plot2.pdf", sep = "")
 ggsave(FileName, plot = full.rev.quality.plot2, width = 20, height = 20, units = "in", dpi = 300)
-plotQualityProfile(fnFs3[1:6]) + ggtitle("Fwd3")
-full.fwd.quality.plot3 <- plotQualityProfile(fnFs3[1:6]) + ggtitle("Fwd") #Entre chaves: coloque o intervalo total de amostras
+
+# Terceira corrida
+
+# FWD
+plotQualityProfile(fnFs3[1:5]) + ggtitle("Fwd3")
+full.fwd.quality.plot3 <- plotQualityProfile(fnFs3[1:5]) + ggtitle("Fwd") #Entre chaves: coloque o intervalo total de amostras
 #Salvando
 FileName <- paste(Preprocessing,"/Fwd Quality Plot3.pdf", sep = "")
 ggsave(FileName, plot = full.fwd.quality.plot3, width = 20, height = 20, units = "in", dpi = 300)
-plotQualityProfile(fnRs3[1:6]) + ggtitle("Rev3")
-full.rev.quality.plot3 <- plotQualityProfile(fnRs3[1:6]) + ggtitle("Rev") #Entre chaves: coloque o intervalo total de amostras
+
+# REV
+plotQualityProfile(fnRs3[1:5]) + ggtitle("Rev3")
+full.rev.quality.plot3 <- plotQualityProfile(fnRs3[1:5]) + ggtitle("Rev") #Entre chaves: coloque o intervalo total de amostras
 #Salvando
 FileName <- paste(Preprocessing,"/Rev Quality Plot3.pdf", sep = "")
 ggsave(FileName, plot = full.rev.quality.plot3, width = 20, height = 20, units = "in", dpi = 300)
