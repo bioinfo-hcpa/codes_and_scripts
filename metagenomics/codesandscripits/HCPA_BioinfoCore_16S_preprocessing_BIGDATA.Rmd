@@ -378,7 +378,7 @@ rownames(samdf) <- samdf$sampleID #Aqui é feita a vinculação do identificador
 #Produzindo o objeto phyloseq
 ps <- phyloseq(tax_table(taxtab),
                sample_data(samdf),
-               otu_table(seqtab, taxa_are_rows = FALSE))
+               otu_table(seqtab.nochim, taxa_are_rows = FALSE))
 ps
 saveRDS(ps, file = "ps.rds") #Salvando o objeto ps 'bruto'. Nesse objeto, o nome da sequẽncia será a própria sequência.
 
