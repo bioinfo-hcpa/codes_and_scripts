@@ -273,7 +273,15 @@ sum(seqtab.nochim)/sum(seqtab.all)
 save(file = "Guerra_etal2024_preprocessing4.RData",list=c('out1', 'out2', 'out3', 'sample.names1F', 'sample.names1R', 'sample.names2F', 'sample.names2R', 'sample.names3F', 'sample.names3R', 'errF1', 'errF2', 'errF3', 'errR1', 'errR2', 'errR3', 'mergers1', 'ddF1', 'ddR1', 'mergers2', 'ddF2', 'ddR2', 'mergers3', 'ddF3', 'ddR3', 'seqtab.all', 'seqtab.nochim'))
 ```
 
-### 0.3.8 Track reads through the pipeline - este chunk gera a tabela de rastreabilidade das sequências ao longo do processo.
+### 0.3.8  Remove non-target-length sequences - aqui é feita a remoção das sequências fora do alvo de tamanho. A região v3v4 possui uma ampla distribuição de tamanho. Por isso, é possível que sejam observados diferentes tamanhos de sequência, na faixa de ~250 a ~500. É interessante remover ASVs fora desta faixa. 
+```{r rem_non_targ, eval=TRUE, echo=TRUE}
+load('nome_do_arquivo_do_ambiente_preprocessing7.RData')
+table(nchar(getSequences(seqtab2)))
+seqtab <- seqtab2[,nchar(colnames(seqtab2)) %in% seq(250,500)] #Se sobrarem sequências muito fora do intervalo esperado, possivelmente sejam "ruído ou sujeira". Ajustar o intervalo de tamanho de sequências para remover. 
+table(nchar(getSequences(seqtab)))
+```
+
+### 0.3.9 Track reads through the pipeline - este chunk gera a tabela de rastreabilidade das sequências ao longo do processo.
 ```{r track_reads, eval=TRUE, echo=TRUE}
 #load('Guerra_etal2024_preprocessing4.RData')
 
@@ -284,13 +292,13 @@ getN <- function(x) sum(getUniques(x))
 track <- rbind(out1, out2, out3)
 
 #Combinar track com tabela agrupada após remoção de chimeras
-track.full <- as.data.frame(cbind(track, rowSums(seqtab.all), rowSums(seqtab.nochim)))
+track.full <- as.data.frame(cbind(track, rowSums(seqtab.all), rowSums(seqtab)))
 ###################################################################################################################################################################
 #Se não tiver tabela de metadados pronta, executar as duas linhas de código abaixo. Se tiver, apagar essas duas linhas e usar o sampleID da tabela de metadados. 
 #ATENÇÃO! A ordem dos nomes da tabela de metadados e no objeto track devem ser os mesmos para que esse processo seja adequado. 
 ###################################################################################################################################################################
 # Adiciona a coluna sampleID ao data frame track
-track.full$sampleID <- row.names(seqtab.nochim)
+track.full$sampleID <- row.names(seqtab)
 
 # Reordena as colunas para colocar sampleID como a primeira
 track.full <- track.full[, c("sampleID", setdiff(names(track.full), "sampleID"))]
@@ -316,7 +324,7 @@ write_xlsx(track,FileName)
 ```{r assign_taxonomy, eval=TRUE, echo=TRUE}
 #Ajustar o link para o arquivo do banco de dados a ser utilizado
 taxtab <- assignTaxonomy(seqtab.nochim, "/home/local.hcpa.ufrgs.br/olovison/BancosdeDados/silva_nr99_v138.1_train_set.fa.gz", multithread = TRUE)
-save(file = "Guerra_etal2024_preprocessing5.RData",list=c('out1', 'out2', 'out3', 'sample.names1F', 'sample.names1R', 'sample.names2F', 'sample.names2R', 'sample.names3F', 'sample.names3R', 'errF1', 'errF2', 'errF3', 'errR1', 'errR2', 'errR3', 'mergers1', 'ddF1', 'ddR1', 'mergers2', 'ddF2', 'ddR2', 'mergers3', 'ddF3', 'ddR3', 'seqtab.all', 'seqtab.nochim', 'taxtab'))
+save(file = "Guerra_etal2024_preprocessing5.RData",list=c('out1', 'out2', 'out3', 'sample.names1F', 'sample.names1R', 'sample.names2F', 'sample.names2R', 'sample.names3F', 'sample.names3R', 'errF1', 'errF2', 'errF3', 'errR1', 'errR2', 'errR3', 'mergers1', 'ddF1', 'ddR1', 'mergers2', 'ddF2', 'ddR2', 'mergers3', 'ddF3', 'ddR3', 'seqtab.all', 'seqtab.nochim', 'seqtab', 'taxtab'))
 #rm(list = ls())
 ```
 
@@ -378,7 +386,7 @@ rownames(samdf) <- samdf$sampleID #Aqui é feita a vinculação do identificador
 #Produzindo o objeto phyloseq
 ps <- phyloseq(tax_table(taxtab),
                sample_data(samdf),
-               otu_table(seqtab.nochim, taxa_are_rows = FALSE))
+               otu_table(seqtab, taxa_are_rows = FALSE))
 ps
 saveRDS(ps, file = "ps.rds") #Salvando o objeto ps 'bruto'. Nesse objeto, o nome da sequẽncia será a própria sequência.
 
