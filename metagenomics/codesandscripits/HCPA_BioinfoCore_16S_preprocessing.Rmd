@@ -180,17 +180,17 @@ save(file = "nome_do_arquivo_do_ambiente_preprocessing6.RData",list=c('out','mis
 
 ### 0.3.12 Remove chimeras and check the output - aqui ocorre a remoção de quimeras e avaliação do percentual do dado que não era quimera.
 ```{r rem_chim, eval=TRUE, echo=TRUE}
-seqtab2 <- removeBimeraDenovo(seqtab.all, multithread=TRUE, verbose = TRUE)
-sum(seqtab2)/sum(seqtab.all)
-save(file = "nome_do_arquivo_do_ambiente_preprocessing7.RData",list=c('out','miseq_path','filt_path','fns','fnFs', 'fnRs', 'ii', 'filtFs', 'filtRs', 'sam.names', 'derepFs', 'derepRs', 'ddF', 'ddR', 'dadaFs', 'dadaRs', 'mergers', 'seqtab.all', 'seqtab2'))
+seqtab.nochim <- removeBimeraDenovo(seqtab.all, multithread=TRUE, verbose = TRUE)
+sum(seqtab.nochim)/sum(seqtab.all)
+save(file = "nome_do_arquivo_do_ambiente_preprocessing7.RData",list=c('out','miseq_path','filt_path','fns','fnFs', 'fnRs', 'ii', 'filtFs', 'filtRs', 'sam.names', 'derepFs', 'derepRs', 'ddF', 'ddR', 'dadaFs', 'dadaRs', 'mergers', 'seqtab.all', 'seqtab.nochim'))
 rm(list = ls())
 ```
 
 ### 0.3.13  Remove non-target-length sequences - aqui é feita a remoção das sequências fora do alvo de tamanho. A região v3v4 possui uma ampla distribuição de tamanho. Por isso, é possível que sejam observados diferentes tamanhos de sequência, na faixa de ~250 a ~500. É interessante remover ASVs fora desta faixa. 
 ```{r rem_non_targ, eval=TRUE, echo=TRUE}
 load('nome_do_arquivo_do_ambiente_preprocessing7.RData')
-table(nchar(getSequences(seqtab2)))
-seqtab <- seqtab2[,nchar(colnames(seqtab2)) %in% seq(250,500)] #Se sobrarem sequências muito fora do intervalo esperado, possivelmente sejam "ruído ou sujeira". Ajustar o intervalo de tamanho de sequências para remover. 
+table(nchar(getSequences(seqtab.nochim)))
+seqtab <- seqtab.nochim[,nchar(colnames(seqtab.nochim)) %in% seq(250,500)] #Se sobrarem sequências muito fora do intervalo esperado, possivelmente sejam "ruído ou sujeira". Ajustar o intervalo de tamanho de sequências para remover. 
 table(nchar(getSequences(seqtab)))
 ```
 
@@ -218,7 +218,7 @@ write_xlsx(track,FileName)
 ```{r assign_taxonomy, eval=TRUE, echo=TRUE}
 #Ajustar o link para o arquivo do banco de dados a ser utilizado
 taxtab <- assignTaxonomy(seqtab, "/home/metagenomica/Bancos_de_dados/SILVA/silva_nr99_v138.1_train_set.fa.gz", multithread = TRUE)
-save(file = "nome_do_arquivo_do_ambiente_preprocessing8.RData",list=c('out','miseq_path','filt_path','fns','fnFs', 'fnRs', 'ii', 'filtFs', 'filtRs', 'sam.names', 'derepFs', 'derepRs', 'ddF', 'ddR', 'dadaFs', 'dadaRs', 'mergers', 'seqtab.all', 'seqtab2', 'seqtab', 'taxtab'))
+save(file = "nome_do_arquivo_do_ambiente_preprocessing8.RData",list=c('out','miseq_path','filt_path','fns','fnFs', 'fnRs', 'ii', 'filtFs', 'filtRs', 'sam.names', 'derepFs', 'derepRs', 'ddF', 'ddR', 'dadaFs', 'dadaRs', 'mergers', 'seqtab.all', 'seqtab.nochim', 'seqtab', 'taxtab'))
 rm(list = ls())
 ```
 
