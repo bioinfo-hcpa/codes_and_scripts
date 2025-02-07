@@ -1,0 +1,311 @@
+---
+title: "ZIDMbvs"
+author: "Otávio von Ameln Lovison"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+    theme: cerulean
+    highlight: haddock
+    toc: yes
+    toc_depth: 3
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+    code_fold: show
+  word_document: 
+    toc: yes
+    toc_depth: '5'
+  pdf_document:
+    toc: yes
+    toc_depth: '5'
+---
+
+## Bayesian zero-inflated Dirichlet-multinomial regression model for multivariate compositional count data (ZIDMbvs)
+Por orientação do desenvolvedor do modelo, vamos utilizar o dado aglomerado em nível de gênero para a modelagem.
+```{r zidmbvs, eval=T, echo=TRUE}
+#Criando o diretório
+path <- '/home/otavio/Projects/Miller_et_al_2024_gengivitis/'
+ZIDMbvs = paste(path,"/ZIDMbvs_genus/",sep = "")
+dir.create(ZIDMbvs)
+
+#Importando objeto ps
+ps <- readRDS("ps1.dna.genus.rds")
+ps
+
+#Extraindo os dados
+asv <- as.data.frame(otu_table(ps))
+asv <- as.matrix(asv)
+samdf <- microbiome::meta(ps)
+
+# Removendo as variáveis categóricas desnecessárias
+cols_to_remove <- c("eppendorfID", "sampleID", "patientID", "seqID", "sample.type", "Date", 
+                    "Sex", "Age", "Exam", "VPI.Site.1", "VPI.Site.2", "VPI.Site.3", "VPI.Site.4", 
+                    "MBI.Site.1", "MBI.Site.2", "MBI.Site.3", "MBI.Site.4", 
+                    "BoP.Site.1", "BoP.Site.2", "BoP.Site.3", "BoP.Site.4", "batch")
+
+samdf2 <- samdf[, !(names(samdf) %in% cols_to_remove)]
+
+# Calculando a média das variáveis PPD.Site e CAL.Site para modelagem
+samdf2$PPD_Mean <- rowMeans(samdf2[, grep("PPD.Site", names(samdf2), value = TRUE)], na.rm = TRUE)
+samdf2$CAL_Mean <- rowMeans(samdf2[, grep("CAL.Site", names(samdf2), value = TRUE)], na.rm = TRUE)
+
+# Removendo as colunas individuais dos sítios após calcular a média
+cols_to_remove_PPD_CAL <- c(grep("PPD.Site", names(samdf2), value = TRUE), 
+                            grep("CAL.Site", names(samdf2), value = TRUE))
+
+samdf3 <- samdf2[, !(names(samdf2) %in% cols_to_remove_PPD_CAL)]
+
+#Convertendo samdf3 em matrix
+samdf3 <- as.matrix(samdf3)
+
+#Padronizando as covariáveis (scaling)
+samdf3 <- scale(samdf3[, c("PPD_Mean", "CAL_Mean")]) 
+
+#Ajustando o modelo
+iterations <- 10000
+thin <- 10
+fit_ZIDMbvs <-  ZIDMbvs_R( Z = asv, X = samdf3, X_theta = samdf3, iterations = iterations, thin = thin )
+
+FileName <- paste(ZIDMbvs,"/fit_ZIDMbvs.rds", sep = "")
+saveRDS(fit_ZIDMbvs,FileName)
+```
+
+Para demonstrar a convergência do algoritmo, plotamos o número de termos ativos no modelo ao longo das iterações MCMC (Markov chain Monte Carlo):
+O código gera gráficos para avaliar a convergência do algoritmo baseado no número de termos ativos (zeta e varphi) ao longo das iterações MCMC. O objetivo é visualizar a estabilidade do número de termos ativos à medida que o algoritmo avança. Essas métricas foram aplicadas para avaliar a seleção de covariáveis associadas tanto aos indicadores de inflação zero (zeta) quanto às contagens composicionais (varphi).
+```{r model_converg_plots, eval=T, echo=TRUE}
+y <- apply( fit_ZIDMbvs$zeta, 3, sum)
+x <- 1:length( y )
+dat <- data.frame( x, y )
+conv1 <-  ggplot(dat, aes(x, y)) + geom_line(aes(x=x, y=y)) + labs(x = "MCMC Sample", y = "Count",  title = " At-Risk Indicator Active Terms") + theme( title =element_text(size=10) )
+
+y <- apply( fit_ZIDMbvs$varphi, 3, sum)
+x <- 1:length( y )
+dat <- data.frame( x, y )
+conv2 <-  ggplot(dat, aes(x, y)) + geom_line(aes(x=x, y=y)) + labs(x = "MCMC Sample", y = "Count",  title = "Compositional Count Active Terms")+ theme( title =element_text(size=10 ) )
+
+par(mar = c(5, 5, .1, .1))
+print(conv1)
+print(conv2)
+```
+
+Os gráficos dos MPPIs (probabilidade marginal posterior de inclusão) correspondentes para ambos os níveis do modelo - os indicadores de risco (zeta) e as contagens composicionais (varphi) - são apresentados abaixo. A linha pontilhada horizontal indica o limiar de seleção. As covariáveis com MPPIs correspondentes acima de 0,50 são consideradas ativas (incluídas) no modelo.
+
+```{r mppi_plots, eval=T, echo=TRUE}
+MPPI_varphi <- apply( fit_ZIDMbvs$varphi[ ,, 251:1000 ], c(1,2), mean )
+MPPI_zeta <- apply( fit_ZIDMbvs$zeta[ ,, 251:1000 ], c(1,2), mean ) 
+y <- c(MPPI_zeta[,-1])
+x <- seq(1, length(y))
+data <- data.frame(cbind(y, x))
+
+aa <- ggplot(data, aes(x, y)) + geom_segment(aes(xend = x, 
+                                                 yend = 0), size = 0.2, lineend = "butt") + labs(x = "Covariate Index", 
+                                                                                                 y = "MPPI", title = " At-Risk Indicator Associations") + geom_abline(slope = 0, intercept = 0.5, linetype = "dashed") + theme( title =element_text(size=8 ) )
+
+yb <- c(MPPI_varphi[,-1])
+xb <- seq(1, length(yb))
+datab <- data.frame(cbind(yb, xb))
+
+bb <- ggplot(datab, aes(xb, yb)) + geom_segment(aes(xend = xb, 
+                                                 yend = 0), size = 0.2, lineend = "butt") + labs(x = "Covariate Index", 
+                                                                                                 y = "MPPI", title = "Compositional Count Associations") + geom_abline(slope = 0, intercept = 0.5, linetype = "dashed") + theme( title =element_text(size=9 ) )
+
+par(mar = c(4, 4, .1, .1))
+print(aa)
+print(bb)
+```
+
+Extracting the fitted abundances
+```{r ext_abun, eval=T, echo=TRUE}
+# Extrair as abundâncias relativas estimadas
+cc <- fit_ZIDMbvs$cc[ ,, 251:1000 ] #Ajustar o intervalo de MCMC a ser utilizado - o burn in (iterações até a estabilização do modelo, observado na figura "Compositional Count Active Terms") deve ser descontado. 
+
+#Extraindo a média contagens absolutas
+asv_model_counts <- apply(cc, c(1,2), mean) 
+rownames(asv_model_counts) <- rownames(asv)  # Atribuir nomes das amostras (linhas)
+colnames(asv_model_counts) <- colnames(asv)  # Atribuir nomes dos ASVs (colunas)
+FileName <- paste(ZIDMbvs,"/asv_model_counts.rds", sep = "")
+saveRDS(asv_model_counts,FileName)
+
+#Normalização
+norm_relative_abundances <- apply(cc, c(1, 3), function(x) x / sum(x)) #Abundãncia relativa
+
+# Calcular a média das abundâncias relativas sobre as iterações MCMC
+relative_abundances_mean <- apply(norm_relative_abundances, c(1,2), mean)
+
+#Transpondo
+relative_abundances_mean <- t(relative_abundances_mean)
+rownames(relative_abundances_mean) <- rownames(asv)  # Atribuir nomes das amostras (linhas)
+colnames(relative_abundances_mean) <- colnames(asv)  # Atribuir nomes dos ASVs (colunas)
+FileName <- paste(ZIDMbvs,"/relative_abundances_mean.rds", sep = "")
+saveRDS(relative_abundances_mean,FileName)
+
+#Montando o objeto phyloseq com as abundâncias corrigidas
+ps.model <- ps
+ps.model <- phyloseq(tax_table(ps),
+                     sample_data(samdf),
+                     otu_table(asv_model_counts, taxa_are_rows = FALSE))
+FileName <- paste(ZIDMbvs,"/ps.model.rds", sep = "")
+saveRDS(ps.model, FileName)
+```
+
+## Associations
+The MCMC samples for the regression coefficients are also captured in the ZIDMbvs_R output (i.e., $beta_gamma). The exp(beta_gamma_jp) is the expected multiplicative change in the jth concentration parameter of the Dirichlet distribution with a 1 unit increase in p. Admittedly, this is difficult to interpret from an applied perspective. You can view these as the estimated association with the counts as well, but that somewhat ignores the compositional aspect of the data. Alternatively, you can calculate how a covariate is associated with the relative abundances using the output.
+
+```{r associations_counts, eval=T, echo=TRUE}
+# Engenharia dos dados - selecionando beta_gamma
+beta_gamma_means <- apply( fit_ZIDMbvs$beta_gamma[ ,-1, (floor(iterations/thin)/2 + 1):(floor(iterations/thin))  ], c( 1, 2 ), mean) 
+beta_gamma_means <- beta_gamma_means*(MPPI_varphi[,-1] > 0.5)
+rownames( beta_gamma_means ) <- colnames(asv) 
+colnames( beta_gamma_means ) <- colnames(samdf3) 
+
+selected_names <- numeric()
+for( i in 1:nrow(beta_gamma_means)){
+  for( j in 1:ncol(beta_gamma_means)){
+    if( beta_gamma_means[i,j] != 0 ){
+      selected_names <- rbind(selected_names, c(row.names( beta_gamma_means )[i], colnames( beta_gamma_means )[j],  beta_gamma_means [i,j]))
+    }
+  }
+}
+
+#Se precisar ajustar algum nome
+#selected_names <- apply( selected_names, MARGIN = c(1,2), FUN = function(x) { gsub("Incertae Sedis", "inc. sed.", x) })
+
+X <- unique( selected_names[,1] )
+Y <- unique( selected_names[,2] )
+R <- matrix( 0, nrow = ( length( X ) ),ncol = length( Y ) )
+rownames(R) <- X
+colnames(R) <- Y
+for(i in 1:nrow(selected_names)){
+  R[ which( rownames( R ) %in% selected_names[ i, 1] ), which( colnames( R ) %in% selected_names[ i, 2] )] <- selected_names[ i, 3]
+}
+# Plot the heatmap
+brewer.pal(500,"RdYlGn")
+redblue(500)
+paletteLength <- 51
+myColor <- colorRampPalette(c("dodgerblue3","ivory1","tomato3"))(paletteLength)
+# length(breaks) == length(paletteLength) + 1
+# use floor and ceiling to deal with even/odd length pallettelengths
+myBreaks <- c(seq(min(R), 0, length.out=ceiling(paletteLength/2) + 1), 
+              seq(max(R)/paletteLength, max(R), length.out=floor(paletteLength/2)))
+counts_heatmap <- pheatmap(R, color=myColor, breaks=myBreaks, fontsize = 7.5,  treeheight_row =0 ,treeheight_col =0, angle_col = 315)
+counts_heatmap
+
+#Salvando
+FileName <- paste(ZIDMbvs,"/Associations - Absolute Counts.pdf", sep = "")
+ggsave(FileName, plot = counts_heatmap, width = 180, height = 170, units = "mm", dpi = 300)
+
+#Salvando
+FileName <- paste(ZIDMbvs,"/Associations - Absolute Counts.png", sep = "")
+ggsave(FileName, plot = counts_heatmap, width = 180, height = 170, units = "mm", dpi = 300)
+
+R <- as.data.frame(R)
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(ZIDMbvs,"/Associations - Absolute Counts.xlsx", sep = "")
+write_xlsx(R,FileName)
+```
+
+### Associations - Relative Abundances
+```{r associations_rel_abund, eval=F, echo=TRUE}
+# R function
+betaMeanOneUnitChange <- function(betas, X) {
+  #' Average  Multiplicative Change in Relative Abundance
+  #'
+  #' This function finds the average multiplicative change in  
+  #' Relative Abundance (RA) of each j taxa given a one unit  
+  #' increase in each p covariates.
+  #'
+  #' @params betas (matrix) P by J matrix where P is the number
+  #' of coefficients including the intercept and J is the number
+  #' of taxa.
+  #' @params X (matrix) N by P matrix where N is the number of 
+  #' measurements.
+  #' @return (matrix) P by J matrix with the multiplicative change in RA
+  #' for all j corresponding each 2:p covariates. Note that the
+  #' first row are zeros due to it corresponding to the intercepts.
+  NUM_CAT <- dim(betas)[2]
+  NUM_COEF <- dim(betas)[1]
+  oneUnitChange <- matrix(0, NUM_COEF, NUM_CAT)
+
+  for (p in 2:NUM_COEF) { 
+    adding <- rep(0, NUM_COEF) 
+    adding[p] <- 1 
+    frac <- rowSums(exp(X%*%betas))/rowSums(exp(sweep(X, 2, adding,
+                                                         "+")%*%betas))
+    for (c in 1:NUM_CAT) {
+      oneUnitChange[p, c] <- mean(exp(betas[p, c])*frac)
+    }
+  }
+
+  return(oneUnitChange)
+}
+
+# Engenharia dos dados - selecionando beta_gamma
+betas <- apply( fit_ZIDMbvs$beta_gamma[ , , (floor(iterations/thin)/2 + 1):(floor(iterations/thin))  ], c( 1, 2 ), mean)
+
+#Selecionando os significativos
+betas <- betas*(MPPI_varphi[,] > 0.5)
+betas <- t(betas)
+
+#Ajustando o X para corresponder ao intercept
+X <- cbind(1, samdf3)
+
+#Resultado da função
+fun_res <- betaMeanOneUnitChange(betas, X) 
+
+###############################################################
+rownames( fun_res ) <- colnames(X) 
+colnames( fun_res ) <- colnames(asv) 
+
+selected_names <- numeric()
+for( i in 1:nrow(fun_res)){
+  for( j in 1:ncol(fun_res)){
+    if( fun_res[i,j] != 0 ){
+      selected_names <- rbind(selected_names, c(row.names( fun_res )[i], colnames( fun_res )[j],  fun_res [i,j]))
+    }
+  }
+}
+
+#Se precisar ajustar algum nome
+#selected_names <- apply( selected_names, MARGIN = c(1,2), FUN = function(x) { gsub("Incertae Sedis", "inc. sed.", x) })
+
+
+X <- unique( selected_names[,1] )
+Y <- unique( selected_names[,2] )
+R <- matrix( 0, nrow = ( length( X ) ),ncol = length( Y ) )
+rownames(R) <- X
+colnames(R) <- Y
+for(i in 1:nrow(selected_names)){
+  R[ which( rownames( R ) %in% selected_names[ i, 1] ), which( colnames( R ) %in% selected_names[ i, 2] )] <- selected_names[ i, 3]
+}
+
+R <- matrix( as.numeric( R ), nrow = ( length( X ) ), ncol = length( Y ) )
+rownames(R) <- X
+colnames(R) <- Y
+
+# Plot the heatmap
+brewer.pal(500,"RdYlGn")
+redblue(500)
+paletteLength <- 51
+myColor <- colorRampPalette(c("dodgerblue3","ivory1","tomato3"))(paletteLength)
+# length(breaks) == length(paletteLength) + 1
+# use floor and ceiling to deal with even/odd length pallettelengths
+myBreaks <- c(seq(min(R), 0, length.out=ceiling(paletteLength/2) + 1), 
+              seq(max(R)/paletteLength, max(R), length.out=floor(paletteLength/2)))
+counts_heatmap <- pheatmap(R, color=myColor, breaks=myBreaks, fontsize = 7.5,  treeheight_row =0 ,treeheight_col =0, angle_col = 315)
+counts_heatmap
+
+#Salvando
+FileName <- paste(ZIDMbvs,"/Associations - Relative Counts.pdf", sep = "")
+ggsave(FileName, plot = counts_heatmap, width = 180, height = 170, units = "mm", dpi = 300)
+
+#Salvando
+FileName <- paste(ZIDMbvs,"/Associations - Relative Counts.png", sep = "")
+ggsave(FileName, plot = counts_heatmap, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(ZIDMbvs,"/Associations - Relative Counts.xlsx", sep = "")
+write_xlsx(R,FileName)
+```
+## Agradecer o Dr. Matthew D. Koslovsky do Department of Statistics, Colorado State University pelas discussões acerca da aplicação do Bayesian zero-inflated Dirichlet-multinomial regression model for multivariate compositional count data (Modelo de regressão Bayesiano Dirichlet-multinomial com inflação de zeros)
