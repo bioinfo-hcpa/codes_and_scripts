@@ -1,0 +1,2138 @@
+---
+title: "INVESTIGATION OF THE EFFECT OF ANTI-INFLAMMATORY DRUGS ON BEHAVIORAL, IMMUNOLOGICAL AND MICROBIOLOGICAL PARAMETERS IN AN ANIMAL MODEL OF EPILETIC SEIZURES INDUCED BY PENTYLENETETRAZOLE"
+author: "Dr. Otávio von Ameln Lovison"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 3
+    latex_engine: xelatex
+  word_document:
+    toc: yes
+    toc_depth: 5
+  html_document:
+    df_print: paged
+    theme: cerulean
+    highlight: haddock
+    toc: yes
+    toc_depth: 3
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+    code_folding: show
+always_allow_html: yes
+header-includes:
+  - \usepackage{float}
+  - \usepackage{placeins}           # Para usar \FloatBarrier
+  - \usepackage[font=small]{caption} # Legendas mais ajustadas
+---
+
+```{r setup, include = FALSE}
+# Este primeiro chunk deve ser executado sempre que qualquer análise for ser realizada.
+# Diretório de análise
+path <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Padilha_et_al_2025/Analysis'
+knitr::opts_knit$set(root.dir = path)
+
+# Configurações globais de chunk
+knitr::opts_chunk$set(
+  collapse   = TRUE,
+  echo       = TRUE,
+  message    = FALSE,
+  warning    = FALSE,
+  comment    = "#>",
+  
+  # Impressão de múltiplos plots em ordem
+  fig.show   = "hold",     # <-- agrupa plots de um mesmo chunk
+  fig.align  = "center",
+  fig.width  = 8,          # redimensione a gosto (em polegadas)
+  fig.height = 7,
+  dpi        = 300,
+  out.width  = "\\textwidth", # ajusta largura ao texto
+
+  # Para forçar posição “aqui” dos floats
+  fig.pos    = "H",         # requer \usepackage{float}
+  results    = 'asis'
+)
+options(knitr.table.format = "latex")
+```
+
+# 0 - Study description
+
+Data for this analysis is derived from the research project titled 'Investigation of the Effect of Anti-inflammatory Drugs on Behavioral, Immunological and Microbiological Parameters in an Animal Model of Epileptic Seizures Induced by Pentylenetetrazole', approved by the ethics committee (approval number not provided).
+
+The bioinformatics analyses were carried out at the Bioinformatics Core of Hospital de Clínicas de Porto Alegre (HCPA). This document details the microbiome analysis workflow implemented in this study.
+
+In this analysis, intestinal samples were collected from male Wistar rats subjected to a seizure induction model using pentylenetetrazole (PTZ). The animals were grouped based on treatments administered: saline control (n=8), diazepam at 2 mg/kg (n=8), hydrocortisone at 5 mg/kg (n=7), and hydrocortisone at 10 mg/kg (n=7).
+
+Samples were obtained following decapitation, with intestines meticulously cleaned using 0.9% sodium chloride solution to remove fecal residues. Subsequently, tissues underwent mechanical maceration using the TissueRuptor® II (Qiagen, Germany) homogenizer and were preserved at -80°C until DNA extraction, approximately 12 months post-collection. DNA was extracted using the Maxwell® RSC Fecal Microbiome DNA Kit, and sequencing was performed on an Illumina MiSeq platform, targeting the V3-V4 hypervariable regions of the bacterial 16S rRNA gene.
+
+The primary research hypotheses aimed to investigate whether gut microbiota influences inflammation-mediated epileptogenesis and if hydrocortisone modulates intestinal microbiome composition in the PTZ-induced seizure model.
+
+
+
+```{r download_main_data, eval=FALSE, echo=FALSE}
+##Link for the repository containing the phyloseq object for all subsequent analyses.
+#https://github.com/otaviolovison/Hemicell_timeseries_2025
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+
+# 0.1 Descriptive data
+```{r desc_data, eval=TRUE, echo=FALSE}
+# Carrega as bibliotecas necessárias
+library(phyloseq)    
+library(microbiome)  
+library(dplyr)      
+library(tibble)     
+library(gtsummary)   
+library(kableExtra) 
+library(writexl)    
+
+# 1) Diretório
+path     <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Padilha_et_al_2025/Analysis'
+overview <- file.path(path, "overview")
+dir.create(overview, showWarnings = FALSE, recursive = TRUE)
+
+# 1) Carrega o phyloseq
+ps0 <- readRDS("ps.dna.rds")
+
+# 2) Ajusta o fator Group para ter "Negative control" como referência
+sd <- sample_data(ps0)
+sd$Group <- factor(sd$Group,
+  levels = c("Negative control",
+             "Positive control",
+             "Test group 1",
+             "Test group 2"))
+sd$Group <- relevel(sd$Group, ref = "Negative control")
+sample_data(ps0) <- sd
+
+# 2.1) Salva o objeto phyloseq ajustado
+saveRDS(ps0, "ps0.rds")
+
+# 3) Extrai metadados ajustados
+samdf <- microbiome::meta(ps0)
+
+# 4) Cria tabela descritiva por Group
+summary_table <- samdf %>%
+  select(Group, Sex, Treatment) %>%
+  tbl_summary(
+    by        = Group,
+    missing   = "no",
+    statistic = all_categorical() ~ "{n}/{N} ({p}%)",
+    label     = list(
+      Sex       ~ "Sex",
+      Treatment ~ "Treatment"
+    )
+  ) %>%
+  #add_p(test = all_categorical() ~ "fisher.test") %>%
+  modify_header(
+    label          ~ "**Variable**",
+    all_stat_cols() ~ "**{level}**"
+  ) %>%
+  modify_spanning_header(
+    all_stat_cols() ~ "**Group (N={N})**"
+  ) %>%
+  bold_labels()
+
+# 5) Imprime no relatório (PDF via knitr + kableExtra)
+print(
+  summary_table %>%
+    as_kable_extra(
+      booktabs = TRUE,
+      linesep  = "",
+      caption  = "Descriptive Table by Group"
+    ) %>%
+    kable_styling(
+      latex_options = c("hold_position", "scale_down")
+    )
+)
+
+# Limpa ambiente
+rm(list = ls(all = TRUE))
+```
+
+# 0.2 Data preparation
+## 0.2.1 Data prep plot
+```{r data_prep_plot, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4,  fig.cap='Prevalence vs. Total Abundance (ASVs) with filtering cutoff'}
+library(phyloseq)
+library(ggplot2)
+
+# 1) Carrega objeto e dados
+ps.dna <- readRDS("ps0.rds")
+ps0.dna <- subset_taxa(ps.dna,
+                       !is.na(Phylum) &
+                       !Phylum %in% c("", "uncharacterized", "NA"))
+prevalenceThreshold <- 0.1 * nsamples(ps0.dna)
+
+# 2) Prevalence x Abundance
+prev_counts <- apply(otu_table(ps0.dna) > 0,
+                     ifelse(taxa_are_rows(ps0.dna), 1, 2),
+                     sum)
+abund_counts <- taxa_sums(ps0.dna)
+prevdf_asv <- data.frame(Prevalence = prev_counts,
+                         Abundance  = abund_counts)
+
+# 3) Plot
+ggplot(prevdf_asv, aes(x = Prevalence, y = Abundance)) +
+  geom_point(alpha = 0.4) +
+  geom_vline(xintercept = prevalenceThreshold,
+             linetype = "dashed", color = "red") +
+  labs(
+    title    = "Prevalence vs. Total Abundance (ASVs)",
+    subtitle = paste0("Filtering cutoff = ", prevalenceThreshold, " samples"),
+    x        = "Number of samples in which ASV appears",
+    y        = "Total read count"
+  ) +
+  theme_bw(base_size = 12)
+```
+
+## 0.2.2 Data preparation table
+```{r data_prep_table, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+library(phyloseq)
+library(dplyr)
+library(tibble)
+library(knitr)
+library(kableExtra)
+
+# 1) Carrega e filtra o objeto ps
+ps0.dna      <- readRDS("ps0.rds")
+ps0.filtered <- subset_taxa(ps0.dna,
+                            !is.na(Phylum) &
+                            !Phylum %in% c("", "uncharacterized", "NA"))
+
+# 2) Define thresholds
+prevalenceThreshold <- 0.1 * nsamples(ps0.filtered) # 10% das amostras
+totalReads          <- sum(taxa_sums(ps0.filtered))
+abundanceThreshold  <- 0.0005 * totalReads          # 0.01% do total de reads
+
+# 3) Filtra ASV
+keepASV   <- taxa_sums(ps0.filtered) >= abundanceThreshold &
+             apply(otu_table(ps0.filtered) > 0,
+                   ifelse(taxa_are_rows(ps0.filtered), 1, 2),
+                   sum) >= prevalenceThreshold
+ps1.dna   <- prune_taxa(keepASV, ps0.filtered)
+
+# 4) Filtra Genus
+ps0.genus      <- tax_glom(ps0.filtered, "Genus",  NArm = FALSE)
+keepGenus      <- taxa_sums(ps0.genus) >= abundanceThreshold &
+                  apply(otu_table(ps0.genus) > 0,
+                        ifelse(taxa_are_rows(ps0.genus), 1, 2),
+                        sum) >= prevalenceThreshold
+ps1.dna.genus  <- prune_taxa(keepGenus, ps0.genus)
+
+# 5) Filtra Family
+ps0.family     <- tax_glom(ps0.filtered, "Family", NArm = FALSE)
+keepFamily     <- taxa_sums(ps0.family) >= abundanceThreshold &
+                  apply(otu_table(ps0.family) > 0,
+                        ifelse(taxa_are_rows(ps0.family), 1, 2),
+                        sum) >= prevalenceThreshold
+ps1.dna.family <- prune_taxa(keepFamily, ps0.family)
+
+# 6) Filtra Phylum
+ps0.phyla      <- tax_glom(ps0.filtered, "Phylum", NArm = FALSE)
+keepPhylum     <- taxa_sums(ps0.phyla) >= abundanceThreshold &
+                  apply(otu_table(ps0.phyla) > 0,
+                        ifelse(taxa_are_rows(ps0.phyla), 1, 2),
+                        sum) >= prevalenceThreshold
+ps1.dna.phy    <- prune_taxa(keepPhylum, ps0.phyla)
+
+# 7) Salva objetos
+saveRDS(ps1.dna,        "ps1.dna.rds")
+saveRDS(ps1.dna.genus,  "ps1.dna.genus.rds")
+saveRDS(ps1.dna.family, "ps1.dna.family.rds")
+saveRDS(ps1.dna.phy,    "ps1.dna.phy.rds")
+
+# 8) Monta e exibe tabela
+counts <- tibble(
+  Level      = c("ASV", "Genus", "Family", "Phylum"),
+  Before     = c(ntaxa(ps0.filtered), ntaxa(ps0.genus),
+                 ntaxa(ps0.family),    ntaxa(ps0.phyla)),
+  After      = c(ntaxa(ps1.dna),      ntaxa(ps1.dna.genus),
+                 ntaxa(ps1.dna.family),ntaxa(ps1.dna.phy)),
+  `Prev Thres`  = round(prevalenceThreshold, 1),
+  `Abund Thres` = round(abundanceThreshold, 0)
+)
+
+#counts
+
+counts %>%
+  kable(
+    caption = "Taxa before/after prevalence \\& abundance filtering",
+    digits  = 0,
+    booktabs= TRUE
+  ) %>%
+  kable_classic(full_width = FALSE, position = "center") %>%
+  column_spec(2:3, width = "1.5cm") %>%
+  column_spec(4:5, width = "1.2cm")
+
+# 9) Limpa ambiente
+rm(list = ls(all = TRUE))
+```
+We filtered out taxa lacking phylum-level annotations, applied a 10% prevalence filter, 0.05% abundance filter, and aggregated taxa at the phylum, family, and genus levels.
+
+# 3.0 Microbiome overview
+## 3.1 Composition
+```{r composition,eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4}
+# Load libraries
+library(broom)
+library(dplyr)
+library(kableExtra)
+library(ggplot2)
+library(forcats)
+library(phyloseq)
+
+# 1) Output directory
+path         <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Padilha_et_al_2025/Analysis'
+overview_dir <- file.path(path, 'overview')
+dir.create(overview_dir, showWarnings = FALSE, recursive = TRUE)
+
+# 2) Carrega objeto phyloseq e aglomerações taxonômicas
+ps_ASV    <- readRDS(file.path(path, 'ps1.dna.rds'))
+ps_phylum <- tax_glom(ps_ASV, 'Phylum', NArm = TRUE)
+ps_family <- tax_glom(ps_ASV, 'Family', NArm = TRUE)
+ps_genus  <- tax_glom(ps_ASV, 'Genus',  NArm = TRUE)
+
+# 3) Metadados + profundidade
+meta <- data.frame(sample_data(ps_ASV)) %>%
+  mutate(
+    Sample    = sample_names(ps_ASV),
+    Depth     = sample_sums(ps_ASV),
+    Group     = factor(Group,
+                  levels = c("Negative control",
+                             "Positive control",
+                             "Test group 1",
+                             "Test group 2")),
+    Sex       = factor(Sex),
+    Treatment = factor(Treatment)
+  )
+
+# 4) ANOVA one-way e tabela tidy
+depth_aov <- aov(Depth ~ Group, data = meta)
+anova_tbl <- broom::tidy(depth_aov)
+colnames(anova_tbl)[1:6] <- c('Term','Df','Sum Sq','Mean Sq','F value','Pr(>F)')
+
+anova_tbl %>%
+  kable(
+    caption    = 'One-way ANOVA on Sequencing Depth by Group',
+    digits     = 3,
+    booktabs   = TRUE
+  ) %>%
+  kable_styling(
+    latex_options = c('hold_position','scale_down')
+  ) %>%
+  print()
+
+#anova_tbl
+
+# 5) Boxplot de profundidade por Group
+p0 <- ggplot(meta, aes(x = Group, y = Depth, fill = Group)) +
+  geom_boxplot(width = 0.6) +
+  scale_fill_manual(values = c(
+    'Negative control' = 'darkgreen',
+    'Positive control' = 'steelblue',
+    'Test group 1'     = 'magenta',
+    'Test group 2'     = 'orange'
+  )) +
+  labs(
+    title = 'Sequencing Depth by Treatment Group',
+    x     = 'Group',
+    y     = 'Sequencing Depth'
+  ) +
+  theme_bw(base_size = 8) +
+  theme(legend.position = 'none')
+
+ggsave(
+  file.path(overview_dir, 'fig0_depth_boxplot.pdf'),
+  p0, width = 180, height = 120, units = 'mm', dpi = 300
+)
+print(p0)
+
+# 6) Barchart de library size por amostra
+p1 <- ggplot(meta, aes(x = Sample, y = Depth, fill = Group)) +
+  geom_col() +
+  scale_fill_manual(values = c(
+    'Negative control' = 'darkgreen',
+    'Positive control' = 'steelblue',
+    'Test group 1'     = 'magenta',
+    'Test group 2'     = 'orange'
+  )) +
+  labs(
+    title = 'Library Size by Sample',
+    x     = 'Sample ID',
+    y     = 'Sequencing Depth',
+    fill  = 'Group'
+  ) +
+  theme_bw(base_size = 8) +
+  theme(
+    axis.text.x   = element_text(angle = 90, vjust = 0.5, hjust = 1),
+    legend.position = 'top'
+  )
+
+ggsave(
+  file.path(overview_dir, 'fig1_library_size.pdf'),
+  p1, width = 180, height = 120, units = 'mm', dpi = 300
+)
+print(p1)
+
+# 7) Função para Figures 2–5: top taxa (suporta ASV alias), facet por Group
+taxa_plot <- function(ps_obj, level_col, top_n, fig_num) {
+  ps_ra <- transform_sample_counts(ps_obj, function(x) x / sum(x))
+  df    <- psmelt(ps_ra)
+  if (level_col == 'ASV') df <- rename(df, ASV = OTU)
+  real_col <- if (level_col == 'ASV') 'ASV' else level_col
+  top_taxa <- df %>%
+    group_by(.data[[real_col]]) %>%
+    summarize(mean_abund = mean(Abundance), .groups = 'drop') %>%
+    arrange(desc(mean_abund)) %>%
+    slice_head(n = top_n) %>%
+    pull(real_col)
+  df_plot <- df %>%
+    mutate(
+      Taxa = as.character(.data[[real_col]]),
+      Taxa = ifelse(Taxa %in% top_taxa, Taxa, 'Other')
+    ) %>%
+    group_by(Sample, Group, Taxa) %>%
+    summarize(Abundance = sum(Abundance), .groups = 'drop') %>%
+    mutate(Taxa = fct_reorder(Taxa, Abundance, .fun = mean))
+
+  p <- ggplot(df_plot, aes(x = Sample, y = Abundance, fill = Taxa)) +
+    geom_bar(stat = 'identity') +
+    facet_wrap(vars(Group), scales = 'free_x', ncol = 1) +
+    labs(
+      title = paste0('Figure ', fig_num, ': Relative Abundance at ', level_col),
+      x     = 'Sample ID',
+      y     = 'Relative Abundance',
+      fill  = level_col
+    ) +
+    theme_bw(base_size = 8) +
+    theme(
+      axis.text.x       = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 6),
+      strip.background  = element_rect(fill = 'white'),
+      strip.text        = element_text(face = 'bold'),
+      legend.position   = 'right'
+    )
+  fname <- paste0('fig', fig_num, '_', tolower(level_col), '.pdf')
+  ggsave(file.path(overview_dir, fname), p,
+         width = 180, height = 120, units = 'mm', dpi = 300)
+  print(p)
+}
+
+# 8) Figures 2–5
+taxa_plot(ps_phylum, 'Phylum', 10, '2')
+taxa_plot(ps_family, 'Family', 10, '3')
+taxa_plot(ps_genus,  'Genus',  20, '4')
+taxa_plot(ps_ASV,    'ASV',    20, '5')
+
+# 9) Limpa ambiente
+rm(list = ls(all = TRUE))
+```
+The differences of sample depth between experimental groups were not statistically significant, but we have outliers (HIDRO(5)1, HIDRO(10)2). Let's keep an eye on them. 
+
+## 3.2 Dominant taxa
+Here we transform the data in relative abundances for proper evaluation.
+```{r microbiome_overview, eval=T, echo=F}
+path <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Padilha_et_al_2025/Analysis'
+overview = paste(path,"/overview/",sep = "")
+
+ps0.dna <- readRDS("ps1.dna.rds")
+
+#Aglomerações
+ps.dna.phy <- tax_glom(ps0.dna, "Phylum", NArm = TRUE)
+ps.dna.family <- tax_glom(ps0.dna, "Family", NArm = TRUE)
+ps.dna.genus <- tax_glom(ps0.dna, "Genus", NArm = TRUE)
+
+#ASV level
+ps.ra <- transform_sample_counts(ps0.dna, function(x) x/sum(x))
+
+#Phylum level
+taxa_names(ps.dna.phy) <- tax_table(ps.dna.phy)[,2]
+ps.phy.ra <- transform_sample_counts(ps.dna.phy, function(x) x/sum(x))
+
+#Family level
+taxa_names(ps.dna.family) <- tax_table(ps.dna.family)[,5]
+ps.family.ra <- transform_sample_counts(ps.dna.family, function(x) x/sum(x))
+
+#Genus level
+#taxa_names(ps.dna.genus) <- tax_table(ps.dna.genus)[,6]
+ps.genus.ra <- transform_sample_counts(ps.dna.genus, function(x) x/sum(x))
+genus.melt <- psmelt(ps.genus.ra)
+```
+
+The distribution of the reads are here summarized on phylum, family and genus level. 
+```{r ov_microbiome_tables, eval=T, echo=F}
+df2 <- data.frame(tax_table(ps.dna.phy), taxprc = 100*taxa_sums(ps.phy.ra)/length(sample_names(ps.phy.ra)))
+df3 <- data.frame(tax_table(ps.dna.family), taxprc = 100*taxa_sums(ps.family.ra)/length(sample_names(ps.family.ra)))
+df4 <- data.frame(tax_table(ps.dna.genus),taxprc = 100*taxa_sums(ps.genus.ra)/length(sample_names(ps.genus.ra)))
+df5 <- data.frame(tax_table(ps0.dna),taxprc = 100*taxa_sums(ps.ra)/length(sample_names(ps.ra)))
+
+df.count <- data.frame(Included = c("All", "> 0.01%", "> 0.1%","> 1%"),
+                          Phylum = c(nrow(df2),sum(df2$taxprc > 0.01),sum(df2$taxprc > 0.1),sum(df2$taxprc > 1)),
+                          Family = c(nrow(df3),sum(df3$taxprc > 0.01),sum(df3$taxprc > 0.1),sum(df3$taxprc > 1)),
+                          Genus = c(nrow(df4),sum(df4$taxprc > 0.01),sum(df4$taxprc > 0.1),sum(df4$taxprc > 1)),
+                          ASV = c(nrow(df5),sum(df5$taxprc > 0.01),sum(df5$taxprc > 0.1),sum(df5$taxprc > 1)))
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(overview,"/Abundance of phyla, family, genera and ASV in microbiome samples.xlsx", sep = "")
+write_xlsx(df.count,FileName)
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(overview,"/Average abundance according to genus.xlsx", sep = "")
+write_xlsx(df4,FileName)
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(overview,"/Average abundance according to family.xlsx", sep = "")
+write_xlsx(df3,FileName)
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(overview,"/Average abundance according to phylum.xlsx", sep = "")
+write_xlsx(df2,FileName)
+
+# Count of ASV and taxa in samples
+kable(df.count, row.names = F,digits = 1, caption = 'Abundance of phyla, family, genera and ASV in microbiome samples')%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# Top 6 dominating phyla (prc abundance)
+kable(head(df2[order(df2$taxprc,decreasing = T),c("Kingdom","Phylum","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to phylum',col.names = c("Kingdom","Phylum","Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# Top 6 dominating family (prc abundance)
+kable(head(df3[order(df3$taxprc,decreasing = T),c("Kingdom","Phylum","Family", "taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to family',col.names = c("Kingdom","Phylum", "Family", "Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# Top 6 dominating (genera prc abundance)
+kable(head(df4[order(df4$taxprc,decreasing = T),c("Kingdom","Phylum","Class","Order","Family","Genus","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to genus',col.names = c("Kingdom","Phylum","Class","Order","Family","Genus","Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+\FloatBarrier
+## 3.3 Distribution of taxa in Negative control samples
+```{r Negative_control_dist1, eval=T, echo=F}
+path <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Padilha_et_al_2025/Analysis'
+over_group = paste(path,"/overview_by_group/",sep = "")
+dir.create(over_group)
+
+ps <- readRDS("ps1.dna.rds")
+ps.Negative_control <- subset_samples(ps, Group=='Negative control')
+
+#Aglomerações
+ps.Negative_control.phy <- tax_glom(ps.Negative_control, "Phylum", NArm = TRUE)
+ps.Negative_control.family <- tax_glom(ps.Negative_control, "Family", NArm = TRUE)
+ps.Negative_control.genus <- tax_glom(ps.Negative_control, "Genus", NArm = TRUE)
+
+#ASV level
+ps.Negative_control.ra <- transform_sample_counts(ps.Negative_control, function(x) x/sum(x))
+
+#Phylum level
+taxa_names(ps.Negative_control.phy) <- tax_table(ps.Negative_control.phy)[,2]
+ps.Negative_control.phy.ra <- transform_sample_counts(ps.Negative_control.phy, function(x) x/sum(x))
+
+#Family level
+taxa_names(ps.Negative_control.family) <- tax_table(ps.Negative_control.family)[,5]
+ps.Negative_control.family.ra <- transform_sample_counts(ps.Negative_control.family, function(x) x/sum(x))
+
+#Genus level
+#taxa_names(ps.dna.genus) <- tax_table(ps.dna.genus)[,6]
+ps.Negative_control.genus.ra <- transform_sample_counts(ps.Negative_control.genus, function(x) x/sum(x))
+ps.Negative_control.genus.melt <- psmelt(ps.Negative_control.genus.ra)
+
+df2 <- data.frame(tax_table(ps.Negative_control.phy), taxprc = 100*taxa_sums(ps.Negative_control.phy.ra)/length(sample_names(ps.Negative_control.phy.ra)))
+df3 <- data.frame(tax_table(ps.Negative_control.family), taxprc = 100*taxa_sums(ps.Negative_control.family.ra)/length(sample_names(ps.Negative_control.family.ra)))
+df4 <- data.frame(tax_table(ps.Negative_control.genus),taxprc = 100*taxa_sums(ps.Negative_control.genus.ra)/length(sample_names(ps.Negative_control.genus.ra)))
+df5 <- data.frame(tax_table(ps.Negative_control),taxprc = 100*taxa_sums(ps.Negative_control.ra)/length(sample_names(ps.Negative_control.ra)))
+
+df.count <- data.frame(Included = c("All", "> 0.01%", "> 0.1%","> 1%"),
+                          Phylum = c(nrow(df2),sum(df2$taxprc > 0.01),sum(df2$taxprc > 0.1),sum(df2$taxprc > 1)),
+                          Family = c(nrow(df3),sum(df3$taxprc > 0.01),sum(df3$taxprc > 0.1),sum(df3$taxprc > 1)),
+                          Genus = c(nrow(df4),sum(df4$taxprc > 0.01),sum(df4$taxprc > 0.1),sum(df4$taxprc > 1)),
+                          ASV = c(nrow(df5),sum(df5$taxprc > 0.01),sum(df5$taxprc > 0.1),sum(df5$taxprc > 1)))
+
+# Count of ASV and taxa in Negative control samples
+kable(df.count, row.names = F,digits = 1, caption = 'Abundance of phyla, family, genera and ASV in Negative control samples')%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(over_group,"/Abundance of phyla, family, genera and ASV in Negative control samples.xlsx", sep = "")
+write_xlsx(df.count,FileName)
+
+# Top 6 dominating phyla (prc abundance)
+kable(head(df2[order(df2$taxprc,decreasing = T),c("Kingdom","Phylum","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to phylum in Negative control samples',col.names = c("Kingdom","Phylum","Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(over_group,"/Average abundance according to phylum in Negative control samples.xlsx", sep = "")
+write_xlsx(df2,FileName)
+
+# Top 6 dominating family (prc abundance)
+kable(head(df3[order(df3$taxprc,decreasing = T),c("Kingdom","Phylum","Family", "taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to family in Negative control samples',col.names = c("Kingdom","Phylum", "Family", "Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(over_group,"/Average abundance according to family in Negative control samples.xlsx", sep = "")
+write_xlsx(df3,FileName)
+
+# Top 6 dominating (genera prc abundance)
+kable(head(df4[order(df4$taxprc,decreasing = T),c("Kingdom","Phylum","Class","Order","Family","Genus","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to genus in Negative control samples',col.names = c("Kingdom","Phylum","Class","Order","Family","Genus","Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(over_group,"/Average abundance according to genus in Negative control samples.xlsx", sep = "")
+write_xlsx(df4,FileName)
+
+# clean environment
+#rm(list = ls(all = TRUE))
+```
+\FloatBarrier
+## 3.4 Distribution of taxa in Positive control samples
+```{r Positive_control_dist1, eval=T, echo=F}
+path <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Padilha_et_al_2025/Analysis'
+over_group = paste(path,"/overview_by_group/",sep = "")
+dir.create(over_group)
+
+ps <- readRDS("ps1.dna.rds")
+ps.Positive_control <- subset_samples(ps, Group=='Positive control')
+
+#Aglomerações
+ps.Positive_control.phy <- tax_glom(ps.Positive_control, "Phylum", NArm = TRUE)
+ps.Positive_control.family <- tax_glom(ps.Positive_control, "Family", NArm = TRUE)
+ps.Positive_control.genus <- tax_glom(ps.Positive_control, "Genus", NArm = TRUE)
+
+#ASV level
+ps.Positive_control.ra <- transform_sample_counts(ps.Positive_control, function(x) x/sum(x))
+
+#Phylum level
+taxa_names(ps.Positive_control.phy) <- tax_table(ps.Positive_control.phy)[,2]
+ps.Positive_control.phy.ra <- transform_sample_counts(ps.Positive_control.phy, function(x) x/sum(x))
+
+#Family level
+taxa_names(ps.Positive_control.family) <- tax_table(ps.Positive_control.family)[,5]
+ps.Positive_control.family.ra <- transform_sample_counts(ps.Positive_control.family, function(x) x/sum(x))
+
+#Genus level
+#taxa_names(ps.dna.genus) <- tax_table(ps.dna.genus)[,6]
+ps.Positive_control.genus.ra <- transform_sample_counts(ps.Positive_control.genus, function(x) x/sum(x))
+ps.Positive_control.genus.melt <- psmelt(ps.Positive_control.genus.ra)
+
+df2 <- data.frame(tax_table(ps.Positive_control.phy), taxprc = 100*taxa_sums(ps.Positive_control.phy.ra)/length(sample_names(ps.Positive_control.phy.ra)))
+df3 <- data.frame(tax_table(ps.Positive_control.family), taxprc = 100*taxa_sums(ps.Positive_control.family.ra)/length(sample_names(ps.Positive_control.family.ra)))
+df4 <- data.frame(tax_table(ps.Positive_control.genus),taxprc = 100*taxa_sums(ps.Positive_control.genus.ra)/length(sample_names(ps.Positive_control.genus.ra)))
+df5 <- data.frame(tax_table(ps.Positive_control),taxprc = 100*taxa_sums(ps.Positive_control.ra)/length(sample_names(ps.Positive_control.ra)))
+
+df.count <- data.frame(Included = c("All", "> 0.01%", "> 0.1%","> 1%"),
+                          Phylum = c(nrow(df2),sum(df2$taxprc > 0.01),sum(df2$taxprc > 0.1),sum(df2$taxprc > 1)),
+                          Family = c(nrow(df3),sum(df3$taxprc > 0.01),sum(df3$taxprc > 0.1),sum(df3$taxprc > 1)),
+                          Genus = c(nrow(df4),sum(df4$taxprc > 0.01),sum(df4$taxprc > 0.1),sum(df4$taxprc > 1)),
+                          ASV = c(nrow(df5),sum(df5$taxprc > 0.01),sum(df5$taxprc > 0.1),sum(df5$taxprc > 1)))
+
+# Count of ASV and taxa in Positive control samples
+kable(df.count, row.names = F,digits = 1, caption = 'Abundance of phyla, family, genera and ASV in Positive control samples')%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(over_group,"/Abundance of phyla, family, genera and ASV in Positive control samples.xlsx", sep = "")
+write_xlsx(df.count,FileName)
+
+# Top 6 dominating phyla (prc abundance)
+kable(head(df2[order(df2$taxprc,decreasing = T),c("Kingdom","Phylum","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to phylum in Positive control samples',col.names = c("Kingdom","Phylum","Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(over_group,"/Average abundance according to phylum in Positive control samples.xlsx", sep = "")
+write_xlsx(df2,FileName)
+
+# Top 6 dominating family (prc abundance)
+kable(head(df3[order(df3$taxprc,decreasing = T),c("Kingdom","Phylum","Family", "taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to family in Positive control samples',col.names = c("Kingdom","Phylum", "Family", "Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(over_group,"/Average abundance according to family in Positive control samples.xlsx", sep = "")
+write_xlsx(df3,FileName)
+
+# Top 6 dominating (genera prc abundance)
+kable(head(df4[order(df4$taxprc,decreasing = T),c("Kingdom","Phylum","Class","Order","Family","Genus","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to genus in Positive control samples',col.names = c("Kingdom","Phylum","Class","Order","Family","Genus","Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(over_group,"/Average abundance according to genus in Positive control samples.xlsx", sep = "")
+write_xlsx(df4,FileName)
+
+# clean environment
+#rm(list = ls(all = TRUE))
+```
+\FloatBarrier
+## 3.5 Distribution of taxa in Test group 1 samples
+```{r test_group_1_dist1, eval=T, echo=F}
+path <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Padilha_et_al_2025/Analysis'
+over_group = paste(path,"/overview_by_group/",sep = "")
+dir.create(over_group)
+
+ps <- readRDS("ps1.dna.rds")
+ps.testgroup1 <- subset_samples(ps, Group=='Test group 1')
+
+#Aglomerações
+ps.testgroup1.phy <- tax_glom(ps.testgroup1, "Phylum", NArm = TRUE)
+ps.testgroup1.family <- tax_glom(ps.testgroup1, "Family", NArm = TRUE)
+ps.testgroup1.genus <- tax_glom(ps.testgroup1, "Genus", NArm = TRUE)
+
+#ASV level
+ps.testgroup1.ra <- transform_sample_counts(ps.testgroup1, function(x) x/sum(x))
+
+#Phylum level
+taxa_names(ps.testgroup1.phy) <- tax_table(ps.testgroup1.phy)[,2]
+ps.testgroup1.phy.ra <- transform_sample_counts(ps.testgroup1.phy, function(x) x/sum(x))
+
+#Family level
+taxa_names(ps.testgroup1.family) <- tax_table(ps.testgroup1.family)[,5]
+ps.testgroup1.family.ra <- transform_sample_counts(ps.testgroup1.family, function(x) x/sum(x))
+
+#Genus level
+#taxa_names(ps.dna.genus) <- tax_table(ps.dna.genus)[,6]
+ps.testgroup1.genus.ra <- transform_sample_counts(ps.testgroup1.genus, function(x) x/sum(x))
+ps.testgroup1.genus.melt <- psmelt(ps.testgroup1.genus.ra)
+
+df2 <- data.frame(tax_table(ps.testgroup1.phy), taxprc = 100*taxa_sums(ps.testgroup1.phy.ra)/length(sample_names(ps.testgroup1.phy.ra)))
+df3 <- data.frame(tax_table(ps.testgroup1.family), taxprc = 100*taxa_sums(ps.testgroup1.family.ra)/length(sample_names(ps.testgroup1.family.ra)))
+df4 <- data.frame(tax_table(ps.testgroup1.genus),taxprc = 100*taxa_sums(ps.testgroup1.genus.ra)/length(sample_names(ps.testgroup1.genus.ra)))
+df5 <- data.frame(tax_table(ps.testgroup1),taxprc = 100*taxa_sums(ps.testgroup1.ra)/length(sample_names(ps.testgroup1.ra)))
+
+df.count <- data.frame(Included = c("All", "> 0.01%", "> 0.1%","> 1%"),
+                          Phylum = c(nrow(df2),sum(df2$taxprc > 0.01),sum(df2$taxprc > 0.1),sum(df2$taxprc > 1)),
+                          Family = c(nrow(df3),sum(df3$taxprc > 0.01),sum(df3$taxprc > 0.1),sum(df3$taxprc > 1)),
+                          Genus = c(nrow(df4),sum(df4$taxprc > 0.01),sum(df4$taxprc > 0.1),sum(df4$taxprc > 1)),
+                          ASV = c(nrow(df5),sum(df5$taxprc > 0.01),sum(df5$taxprc > 0.1),sum(df5$taxprc > 1)))
+
+# Count of ASV and taxa in testgroup1 samples
+kable(df.count, row.names = F,digits = 1, caption = 'Abundance of phyla, family, genera and ASV in testgroup1 samples')%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(over_group,"/Abundance of phyla, family, genera and ASV in testgroup1 samples.xlsx", sep = "")
+write_xlsx(df.count,FileName)
+
+# Top 6 dominating phyla (prc abundance)
+kable(head(df2[order(df2$taxprc,decreasing = T),c("Kingdom","Phylum","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to phylum in testgroup1 samples',col.names = c("Kingdom","Phylum","Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(over_group,"/Average abundance according to phylum in testgroup1 samples.xlsx", sep = "")
+write_xlsx(df2,FileName)
+
+# Top 6 dominating family (prc abundance)
+kable(head(df3[order(df3$taxprc,decreasing = T),c("Kingdom","Phylum","Family", "taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to family in testgroup1 samples',col.names = c("Kingdom","Phylum", "Family", "Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(over_group,"/Average abundance according to family in testgroup1 samples.xlsx", sep = "")
+write_xlsx(df3,FileName)
+
+# Top 6 dominating (genera prc abundance)
+kable(head(df4[order(df4$taxprc,decreasing = T),c("Kingdom","Phylum","Class","Order","Family","Genus","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to genus in testgroup1 samples',col.names = c("Kingdom","Phylum","Class","Order","Family","Genus","Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(over_group,"/Average abundance according to genus in testgroup1 samples.xlsx", sep = "")
+write_xlsx(df4,FileName)
+
+# clean environment
+#rm(list = ls(all = TRUE))
+```
+\FloatBarrier
+## 3.6 Distribution of taxa in Test group 2 samples
+```{r test_group_2_dist1, eval=T, echo=F}
+path <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Padilha_et_al_2025/Analysis'
+over_group = paste(path,"/overview_by_group/",sep = "")
+dir.create(over_group)
+
+ps <- readRDS("ps1.dna.rds")
+ps.testgroup2 <- subset_samples(ps, Group=='Test group 2')
+
+#Aglomerações
+ps.testgroup2.phy <- tax_glom(ps.testgroup2, "Phylum", NArm = TRUE)
+ps.testgroup2.family <- tax_glom(ps.testgroup2, "Family", NArm = TRUE)
+ps.testgroup2.genus <- tax_glom(ps.testgroup2, "Genus", NArm = TRUE)
+
+#ASV level
+ps.testgroup2.ra <- transform_sample_counts(ps.testgroup2, function(x) x/sum(x))
+
+#Phylum level
+taxa_names(ps.testgroup2.phy) <- tax_table(ps.testgroup2.phy)[,2]
+ps.testgroup2.phy.ra <- transform_sample_counts(ps.testgroup2.phy, function(x) x/sum(x))
+
+#Family level
+taxa_names(ps.testgroup2.family) <- tax_table(ps.testgroup2.family)[,5]
+ps.testgroup2.family.ra <- transform_sample_counts(ps.testgroup2.family, function(x) x/sum(x))
+
+#Genus level
+#taxa_names(ps.dna.genus) <- tax_table(ps.dna.genus)[,6]
+ps.testgroup2.genus.ra <- transform_sample_counts(ps.testgroup2.genus, function(x) x/sum(x))
+ps.testgroup2.genus.melt <- psmelt(ps.testgroup2.genus.ra)
+
+df2 <- data.frame(tax_table(ps.testgroup2.phy), taxprc = 100*taxa_sums(ps.testgroup2.phy.ra)/length(sample_names(ps.testgroup2.phy.ra)))
+df3 <- data.frame(tax_table(ps.testgroup2.family), taxprc = 100*taxa_sums(ps.testgroup2.family.ra)/length(sample_names(ps.testgroup2.family.ra)))
+df4 <- data.frame(tax_table(ps.testgroup2.genus),taxprc = 100*taxa_sums(ps.testgroup2.genus.ra)/length(sample_names(ps.testgroup2.genus.ra)))
+df5 <- data.frame(tax_table(ps.testgroup2),taxprc = 100*taxa_sums(ps.testgroup2.ra)/length(sample_names(ps.testgroup2.ra)))
+
+df.count <- data.frame(Included = c("All", "> 0.01%", "> 0.1%","> 1%"),
+                          Phylum = c(nrow(df2),sum(df2$taxprc > 0.01),sum(df2$taxprc > 0.1),sum(df2$taxprc > 1)),
+                          Family = c(nrow(df3),sum(df3$taxprc > 0.01),sum(df3$taxprc > 0.1),sum(df3$taxprc > 1)),
+                          Genus = c(nrow(df4),sum(df4$taxprc > 0.01),sum(df4$taxprc > 0.1),sum(df4$taxprc > 1)),
+                          ASV = c(nrow(df5),sum(df5$taxprc > 0.01),sum(df5$taxprc > 0.1),sum(df5$taxprc > 1)))
+
+# Count of ASV and taxa in testgroup2 samples
+kable(df.count, row.names = F,digits = 1, caption = 'Abundance of phyla, family, genera and ASV in testgroup2 samples')%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(over_group,"/Abundance of phyla, family, genera and ASV in testgroup2 samples.xlsx", sep = "")
+write_xlsx(df.count,FileName)
+
+# Top 6 dominating phyla (prc abundance)
+kable(head(df2[order(df2$taxprc,decreasing = T),c("Kingdom","Phylum","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to phylum in testgroup2 samples',col.names = c("Kingdom","Phylum","Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(over_group,"/Average abundance according to phylum in testgroup2 samples.xlsx", sep = "")
+write_xlsx(df2,FileName)
+
+# Top 6 dominating family (prc abundance)
+kable(head(df3[order(df3$taxprc,decreasing = T),c("Kingdom","Phylum","Family", "taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to family in testgroup2 samples',col.names = c("Kingdom","Phylum", "Family", "Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(over_group,"/Average abundance according to family in testgroup2 samples.xlsx", sep = "")
+write_xlsx(df3,FileName)
+
+# Top 6 dominating (genera prc abundance)
+kable(head(df4[order(df4$taxprc,decreasing = T),c("Kingdom","Phylum","Class","Order","Family","Genus","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to genus in testgroup2 samples',col.names = c("Kingdom","Phylum","Class","Order","Family","Genus","Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# Se quiser exportar para um arquivo Excel
+FileName <- paste(over_group,"/Average abundance according to genus in testgroup2 samples.xlsx", sep = "")
+write_xlsx(df4,FileName)
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+\FloatBarrier
+## 3.7 Groups composition - Top Phyla
+```{r phylum_abundance_by_group, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4}
+# 0) Carrega bibliotecas
+library(phyloseq)   
+library(dplyr)      
+library(ggplot2)    
+library(forcats)    
+library(writexl)   
+library(grid)       
+
+# 1) Paths de entrada e saída
+path           <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Padilha_et_al_2025/Analysis'
+overview_group <- file.path(path, 'overview_by_group')
+dir.create(overview_group, showWarnings = FALSE, recursive = TRUE)
+
+# 2) Importa o objeto phyloseq a nível de Phylum
+ps_ASV    <- readRDS(file.path(path, 'ps1.dna.rds'))
+ps_phy <- tax_glom(ps_ASV, 'Phylum', NArm = TRUE)
+
+# 3) Converte abundâncias para relativas e derrete em data frame
+ps_ra      <- transform_sample_counts(ps_phy, function(x) x / sum(x))
+ps_ra_melt <- psmelt(ps_ra)
+
+# 4) Define paleta de 4 grupos (mesma usada antes)
+palette <- c(
+  'Negative control' = 'darkgreen',
+  'Positive control' = 'steelblue',
+  'Test group 1'     = 'magenta',
+  'Test group 2'     = 'orange'
+)
+
+# 5) Identifica top 10 Phyla por grupo
+Phylum.summary <- ps_ra_melt %>%
+  group_by(Group, Phylum) %>%
+  summarize(mean_abund = mean(Abundance), .groups = 'drop') %>%
+  arrange(desc(mean_abund))
+
+top5 <- Phylum.summary %>%
+  group_by(Group) %>%
+  slice_head(n = 5) %>%
+  pull(Phylum) %>%
+  unique()
+
+# 6) Filtra somente os top Phyla e calcula porcentagem
+df_plot <- ps_ra_melt %>%
+  filter(Phylum %in% top5) %>%
+  mutate(
+    Abundance_percent = ifelse(Abundance < 0.001, 0.1, Abundance * 100),
+    Phylum            = factor(Phylum, levels = rev(unique(Phylum)))
+  )
+
+## Captura o número de táxons para ajustar no título da figura
+n_taxa <- length(unique(df_plot$Phylum))
+
+# 7) Monta o boxplot
+F1 <- ggplot(df_plot, aes(x = Abundance_percent, y = Phylum)) +
+  geom_boxplot(aes(color = Group), 
+               position = position_dodge2(reverse = TRUE, width = 0.8),
+               alpha = 0.5, outlier.shape = NA) +
+  geom_boxplot(aes(fill = Group), 
+               position = position_dodge2(reverse = TRUE, width = 0.8),
+               alpha = 0.5, outlier.shape = 21) +
+  scale_x_log10() +
+  scale_fill_manual(values = palette) +
+  scale_color_manual(values = palette) +
+  labs(
+    x = "Abundance (%)",
+    y = NULL,
+    title = paste0("Top ", n_taxa, " Phylum Abundance by Group")
+  ) +
+  theme_bw(base_size = 8) +
+  theme(
+    axis.text.x      = element_text(size = 6),
+    axis.text.y      = element_text(face = "italic", size = 6),
+    axis.title       = element_text(size = 8),
+    plot.title       = element_text(size = 9, hjust = 0.5),
+    legend.position  = 'bottom',
+    plot.margin      = unit(c(1,1,1,1), "lines")
+  )
+
+print(F1)
+
+# 8) Salva figuras
+ggsave(
+  file.path(overview_group, 'Top_Phylum_Abundance_by_Group.pdf'),
+  F1, width = 180, height = 170, units = 'mm', dpi = 300
+)
+ggsave(
+  file.path(overview_group, 'Top_Phylum_Abundance_by_Group.png'),
+  F1, width = 180, height = 170, units = 'mm', dpi = 300
+)
+
+# 9) Exporta dados para Excel (opcional)
+write_xlsx(
+  df_plot,
+  file.path(overview_group, 'Top_Phylum_Abundance_by_Group.xlsx')
+)
+
+# 10) Limpa ambiente
+rm(list = ls(all = TRUE))
+```
+\FloatBarrier
+## 3.7 Groups composition - Top family
+```{r family_abundance_by_group, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4}
+# 0) Carrega bibliotecas
+library(phyloseq)   
+library(dplyr)      
+library(ggplot2)    
+library(forcats)    
+library(writexl)   
+library(grid)       
+
+# 1) Paths de entrada e saída
+path           <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Padilha_et_al_2025/Analysis'
+overview_group <- file.path(path, 'overview_by_group')
+dir.create(overview_group, showWarnings = FALSE, recursive = TRUE)
+
+# 2) Importa o objeto phyloseq a nível de Family
+ps_ASV    <- readRDS(file.path(path, 'ps1.dna.rds'))
+ps_family <- tax_glom(ps_ASV, 'Family', NArm = TRUE)
+
+# 3) Converte abundâncias para relativas e derrete em data frame
+ps_ra      <- transform_sample_counts(ps_family, function(x) x / sum(x))
+ps_ra_melt <- psmelt(ps_ra)
+
+# 4) Define paleta de 4 grupos (mesma usada antes)
+palette <- c(
+  'Negative control' = 'darkgreen',
+  'Positive control' = 'steelblue',
+  'Test group 1'     = 'magenta',
+  'Test group 2'     = 'orange'
+)
+
+# 5) Identifica top 10 family por grupo
+Family.summary <- ps_ra_melt %>%
+  group_by(Group, Family) %>%
+  summarize(mean_abund = mean(Abundance), .groups = 'drop') %>%
+  arrange(desc(mean_abund))
+
+top10 <- Family.summary %>%
+  group_by(Group) %>%
+  slice_head(n = 5) %>%
+  pull(Family) %>%
+  unique()
+
+# 6) Filtra somente os top family e calcula porcentagem
+df_plot <- ps_ra_melt %>%
+  filter(Family %in% top10) %>%
+  mutate(
+    Abundance_percent = ifelse(Abundance < 0.001, 0.1, Abundance * 100),
+    Family            = factor(Family, levels = rev(unique(Family)))
+  )
+
+## Captura o número de táxons para ajustar no título da figura
+n_taxa <- length(unique(df_plot$Family))
+
+# 7) Monta o boxplot
+F1 <- ggplot(df_plot, aes(x = Abundance_percent, y = Family)) +
+  geom_boxplot(aes(color = Group), 
+               position = position_dodge2(reverse = TRUE, width = 0.8),
+               alpha = 0.5, outlier.shape = NA) +
+  geom_boxplot(aes(fill = Group), 
+               position = position_dodge2(reverse = TRUE, width = 0.8),
+               alpha = 0.5, outlier.shape = 21) +
+  scale_x_log10() +
+  scale_fill_manual(values = palette) +
+  scale_color_manual(values = palette) +
+  labs(
+    x = "Abundance (%)",
+    y = NULL,
+    title = paste0("Top", n_taxa, " Family Abundance by Group")
+  ) +
+  theme_bw(base_size = 8) +
+  theme(
+    axis.text.x      = element_text(size = 6),
+    axis.text.y      = element_text(face = "italic", size = 6),
+    axis.title       = element_text(size = 8),
+    plot.title       = element_text(size = 9, hjust = 0.5),
+    legend.position  = 'bottom',
+    plot.margin      = unit(c(1,1,1,1), "lines")
+  )
+
+print(F1)
+
+# 8) Salva figuras
+ggsave(
+  file.path(overview_group, 'Top_Family_Abundance_by_Group.pdf'),
+  F1, width = 180, height = 170, units = 'mm', dpi = 300
+)
+ggsave(
+  file.path(overview_group, 'Top_Family_Abundance_by_Group.png'),
+  F1, width = 180, height = 170, units = 'mm', dpi = 300
+)
+
+# 9) Exporta dados para Excel (opcional)
+write_xlsx(
+  df_plot,
+  file.path(overview_group, 'Top_Family_Abundance_by_Group.xlsx')
+)
+
+# 10) Limpa ambiente
+rm(list = ls(all = TRUE))
+```
+
+## 3.7 Groups composition - Top genus
+```{r genus_abundance_by_group, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4}
+# 0) Carrega bibliotecas
+library(phyloseq)   
+library(dplyr)      
+library(ggplot2)    
+library(forcats)    
+library(writexl)   
+library(grid)       
+
+# 1) Paths de entrada e saída
+path           <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Padilha_et_al_2025/Analysis'
+overview_group <- file.path(path, 'overview_by_group')
+dir.create(overview_group, showWarnings = FALSE, recursive = TRUE)
+
+# 2) Importa o objeto phyloseq a nível de Genus
+ps_ASV    <- readRDS(file.path(path, 'ps1.dna.rds'))
+ps_phy <- tax_glom(ps_ASV, 'Genus', NArm = TRUE)
+
+# 3) Converte abundâncias para relativas e derrete em data frame
+ps_ra      <- transform_sample_counts(ps_phy, function(x) x / sum(x))
+ps_ra_melt <- psmelt(ps_ra)
+
+# 4) Define paleta de 4 grupos (mesma usada antes)
+palette <- c(
+  'Negative control' = 'darkgreen',
+  'Positive control' = 'steelblue',
+  'Test group 1'     = 'magenta',
+  'Test group 2'     = 'orange'
+)
+
+# 5) Identifica top 10 Genus por grupo
+Genus.summary <- ps_ra_melt %>%
+  group_by(Group, Genus) %>%
+  summarize(mean_abund = mean(Abundance), .groups = 'drop') %>%
+  arrange(desc(mean_abund))
+
+top10 <- Genus.summary %>%
+  group_by(Group) %>%
+  slice_head(n = 5) %>%
+  pull(Genus) %>%
+  unique()
+
+# 6) Filtra somente os top Genus e calcula porcentagem
+df_plot <- ps_ra_melt %>%
+  filter(Genus %in% top10) %>%
+  mutate(
+    Abundance_percent = ifelse(Abundance < 0.001, 0.1, Abundance * 100),
+    Genus            = factor(Genus, levels = rev(unique(Genus)))
+  )
+
+## Captura o número de táxons para ajustar no título da figura
+n_taxa <- length(unique(df_plot$Genus))
+
+# 7) Monta o boxplot
+F1 <- ggplot(df_plot, aes(x = Abundance_percent, y = Genus)) +
+  geom_boxplot(aes(color = Group), 
+               position = position_dodge2(reverse = TRUE, width = 0.8),
+               alpha = 0.5, outlier.shape = NA) +
+  geom_boxplot(aes(fill = Group), 
+               position = position_dodge2(reverse = TRUE, width = 0.8),
+               alpha = 0.5, outlier.shape = 21) +
+  scale_x_log10() +
+  scale_fill_manual(values = palette) +
+  scale_color_manual(values = palette) +
+  labs(
+    x = "Abundance (%)",
+    y = NULL,
+    title = paste0("Top", n_taxa,  " Genus Abundance by Group")
+  ) +
+  theme_bw(base_size = 8) +
+  theme(
+    axis.text.x      = element_text(size = 6),
+    axis.text.y      = element_text(face = "italic", size = 6),
+    axis.title       = element_text(size = 8),
+    plot.title       = element_text(size = 9, hjust = 0.5),
+    legend.position  = 'bottom',
+    plot.margin      = unit(c(1,1,1,1), "lines")
+  )
+
+print(F1)
+
+# 8) Salva figuras
+ggsave(
+  file.path(overview_group, 'Top_Genus_Abundance_by_Group.pdf'),
+  F1, width = 180, height = 170, units = 'mm', dpi = 300
+)
+ggsave(
+  file.path(overview_group, 'Top_Genus_Abundance_by_Group.png'),
+  F1, width = 180, height = 170, units = 'mm', dpi = 300
+)
+
+# 9) Exporta dados para Excel (opcional)
+write_xlsx(
+  df_plot,
+  file.path(overview_group, 'Top_Genus_Abundance_by_Group.xlsx')
+)
+
+# 10) Limpa ambiente
+rm(list = ls(all = TRUE))
+```
+
+# 4.0 Alpha diversity
+```{r alpha_shannon_by_group, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE,fig.cap='Figure: Boxplot of alpha diversity – Shannon diversity index by Group',fig.align='center', fig.width=6, fig.height=4}
+# 0) Carrega bibliotecas
+library(phyloseq)    
+library(dplyr)       
+library(tibble)      
+library(ggplot2)    
+library(ggpubr)     
+library(knitr)       
+library(kableExtra) 
+library(writexl)
+
+# 1) Paths
+path      <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Padilha_et_al_2025/Analysis'
+alpha_div <- file.path(path, 'alpha_div')
+dir.create(alpha_div, showWarnings = FALSE, recursive = TRUE)
+
+# 2) Carrega phyloseq ajustado e remove o outlier
+ps <- readRDS(file.path(path, 'ps1.dna.rds'))
+
+# Remove o outlier de ID "HIDRO(10)2"
+ps.no <- prune_samples(sample_names(ps) != "HIDRO(10)5", ps)
+
+# Salva o novo objeto sem o outlier
+saveRDS(ps.no, file.path(path, 'ps1.dna.no_outlier.rds'))
+
+# 3) Paleta de cores (4 grupos)
+palette <- c(
+  'Negative control' = 'darkgreen',
+  'Positive control' = 'steelblue',
+  'Test group 1'     = 'magenta',
+  'Test group 2'     = 'orange'
+)
+
+# 4) Calcula Shannon para cada amostra e junta metadados
+alpha_df <- estimate_richness(ps.no, measures = "Shannon") %>%
+  rownames_to_column(var = "Sample") %>%
+  left_join(
+    as(sample_data(ps.no), "data.frame") %>% rownames_to_column(var = "Sample"),
+    by = "Sample"
+  )
+
+# 5) Resumo descritivo por Group
+alpha_sum <- alpha_df %>%
+  group_by(Group) %>%
+  summarise(
+    `Samples (n)` = n(),
+    Mean          = mean(Shannon),
+    SD            = sd(Shannon),
+    .groups       = 'drop'
+  )
+
+# 6) Tabela de resumo
+kable(
+  alpha_sum,
+  caption   = 'Summary of Shannon alpha diversity by Group',
+  digits    = 3,
+  col.names = c('Group', 'Samples (n)', 'Mean', 'SD')
+) %>%
+  kable_classic(full_width = FALSE, position = 'center') %>%
+  add_header_above(c('', 'Shannon diversity index' = 3))
+
+# 7) Boxplot with Kruskal–Wallis p-value and legend
+library(ggpubr)  # for stat_compare_means()
+
+p_alpha <- ggplot(alpha_df, aes(x = Group, y = Shannon, fill = Group)) +
+  geom_boxplot(alpha = 0.5, outlier.shape = 21,
+               position = position_dodge(width = 0.75)) +
+  scale_fill_manual(values = palette, name = "Group") +
+  stat_compare_means(
+    aes(label = paste0("Kruskal–Wallis p = ", ..p.format..)),
+    method  = "kruskal.test",
+    label.x = 1.5,
+    label.y = max(alpha_df$Shannon) * 1.05,
+    size    = 3
+  ) +
+  labs(x = "Group", y = "Shannon diversity index") +
+  theme_bw(base_size = 8) +
+  theme(
+    axis.title      = element_text(size = 10),
+    axis.text       = element_text(size = 8),
+    legend.position = "bottom",
+    legend.title    = element_text(size = 8),
+    legend.text     = element_text(size = 7)
+  )
+
+# 8) Salva as figuras
+ggsave(
+  file.path(alpha_div, 'alpha_shannon_by_group.pdf'),
+  p_alpha, width = 180, height = 120, units = 'mm', dpi = 300
+)
+ggsave(
+  file.path(alpha_div, 'alpha_shannon_by_group.png'),
+  p_alpha, width = 180, height = 120, units = 'mm', dpi = 300
+)
+
+# 9) Exporta dados para Excel
+write_xlsx(
+  alpha_df,
+  file.path(alpha_div, 'alpha_shannon_data.xlsx')
+)
+
+# 10) Imprime o plot
+print(p_alpha)
+
+# 11) Limpa ambiente
+rm(list = ls(all = TRUE))
+```
+For the alpha diversity analysis and further, we removed the HIDRO(10)5, since it is a low diversity outlier.
+The differences for alpha diversity between groups were not statistically significant.
+
+# 5.0 Beta diversity and Clustering
+```{r beta_div_ordination, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE,fig.align='center', fig.width=6, fig.height=4}
+# 0) Carrega bibliotecas
+library(compositions)   
+library(vegan)         
+library(ape)            
+library(phyloseq)      
+library(ggplot2)        
+library(dplyr)          
+library(tibble)         
+library(writexl)       
+
+# 1) Define paleta de cores para os 4 grupos
+palette <- c(
+  'Negative control' = 'darkgreen',
+  'Positive control' = 'steelblue',
+  'Test group 1'     = 'magenta',
+  'Test group 2'     = 'orange'
+)
+
+# 2) Paths de entrada/saída
+path       <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Padilha_et_al_2025/Analysis'
+Clustering <- file.path(path, "Clustering")
+dir.create(Clustering, showWarnings = FALSE, recursive = TRUE)
+
+# 3) Carrega o phyloseq
+ps <- readRDS(file.path(path, "ps1.dna.no_outlier.rds"))
+
+# 4) Prepara metadados
+meta <- sample_data(ps) %>%
+  as("data.frame") %>%
+  rownames_to_column("SampleID") %>%
+  mutate(Group = factor(Group, levels = names(palette)))
+
+# 5) ILR-PCA
+seq_counts <- as.data.frame(t(otu_table(ps)))
+ilr_mat    <- compositions::ilr(t(seq_counts))
+pca_res    <- prcomp(ilr_mat, scale. = FALSE)
+var_perc   <- pca_res$sdev^2 / sum(pca_res$sdev^2)
+df_pca     <- data.frame(PC1 = pca_res$x[,1], PC2 = pca_res$x[,2], meta)
+
+p_pca <- ggplot(df_pca, aes(PC1, PC2, color = Group)) +
+  stat_ellipse(size = 1, level = 0.95) +
+  geom_point(size = 3) +
+  scale_color_manual(values = palette, name = "Group") +
+  coord_fixed(ratio = var_perc[2]/var_perc[1]) +
+  labs(
+    title = "PCA (ILR) by Group",
+    x     = paste0("PC1 (", round(var_perc[1]*100,1), "%)"),
+    y     = paste0("PC2 (", round(var_perc[2]*100,1), "%)")
+  ) +
+  theme_bw(base_size = 8) +
+  theme(legend.position = "right")
+
+print(p_pca)
+ggsave(file.path(Clustering, "pca_ilr_by_group.pdf"),
+       p_pca, width = 180, height = 120, units = "mm", dpi = 300)
+write_xlsx(df_pca, file.path(Clustering, "pca_ilr_scores.xlsx"))
+
+# 6) PCoA Jaccard
+jac_dmat <- vegdist(t(seq_counts), method = "jaccard")
+pcoa_res <- ape::pcoa(jac_dmat)
+jvar     <- pcoa_res$values$Relative_eig
+df_pcoa  <- data.frame(Axis.1 = pcoa_res$vectors[,1],
+                       Axis.2 = pcoa_res$vectors[,2],
+                       meta)
+
+p_pcoa <- ggplot(df_pcoa, aes(Axis.1, Axis.2, color = Group)) +
+  stat_ellipse(size = 1, level = 0.95) +
+  geom_point(size = 3) +
+  scale_color_manual(values = palette, name = "Group") +
+  coord_fixed(ratio = jvar[2]/jvar[1]) +
+  labs(
+    title = "PCoA (Jaccard) by Group",
+    x     = paste0("Axis 1 (", round(jvar[1]*100,1), "%)"),
+    y     = paste0("Axis 2 (", round(jvar[2]*100,1), "%)")
+  ) +
+  theme_bw(base_size = 8) +
+  theme(legend.position = "right")
+
+print(p_pcoa)
+ggsave(file.path(Clustering, "pcoa_jaccard_by_group.pdf"),
+       p_pcoa, width = 180, height = 120, units = "mm", dpi = 300)
+write_xlsx(df_pcoa, file.path(Clustering, "pcoa_jaccard_scores.xlsx"))
+
+# 7) NMDS (Jaccard e Aitchison)
+set.seed(123)
+jac_nmds <- metaMDS(jac_dmat, k = 2, autotransform = FALSE, trymax = 100)
+euc_dmat <- dist(ilr_mat)
+euc_nmds <- metaMDS(euc_dmat, k = 2, autotransform = FALSE, trymax = 100)
+
+df_jac_nd <- data.frame(MDS1 = jac_nmds$points[,1],
+                        MDS2 = jac_nmds$points[,2],
+                        meta)
+df_euc_nd <- data.frame(MDS1 = euc_nmds$points[,1],
+                        MDS2 = euc_nmds$points[,2],
+                        meta)
+
+p_nmds_jac <- ggplot(df_jac_nd, aes(MDS1, MDS2, color = Group)) +
+  stat_ellipse(size = 1, level = 0.95) +
+  geom_point(size = 3) +
+  labs(title = paste0("NMDS (Jaccard), stress=", round(jac_nmds$stress,3))) +
+  scale_color_manual(values = palette, name = "Group") +
+  theme_bw(base_size = 8) +
+  theme(legend.position = "right")
+
+print(p_nmds_jac)
+ggsave(file.path(Clustering, "nmds_jaccard_by_group.pdf"),
+       p_nmds_jac, width = 180, height = 120, units = "mm", dpi = 300)
+write_xlsx(df_jac_nd, file.path(Clustering, "nmds_jaccard_scores.xlsx"))
+
+p_nmds_euc <- ggplot(df_euc_nd, aes(MDS1, MDS2, color = Group)) +
+  stat_ellipse(size = 1, level = 0.95) +
+  geom_point(size = 3) +
+  labs(title = paste0("NMDS (Aitchison), stress=", round(euc_nmds$stress,3))) +
+  scale_color_manual(values = palette, name = "Group") +
+  theme_bw(base_size = 8) +
+  theme(legend.position = "right")
+
+print(p_nmds_euc)
+ggsave(file.path(Clustering, "nmds_aitchison_by_group.pdf"),
+       p_nmds_euc, width = 180, height = 120, units = "mm", dpi = 300)
+write_xlsx(df_euc_nd, file.path(Clustering, "nmds_aitchison_scores.xlsx"))
+```
+To corroborate the previous findings, we will perform an hierarchical clustering.
+
+## 5.1 Hierarchical clustering - Jaccard
+```{r hclust_jac, eval=T, echo=F}
+cluster_ex<-hclust(vegdist(t(seq_counts),method='jaccard'),method="complete")
+plot(cluster_ex,main='Jaccard Hierarchical Agglomerative Clustering',xlab='',sub='')
+```
+\FloatBarrier
+
+## 5.2 Beta dispersion
+```{r beta_dispersion, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+# β-dispersion: homogeneity of group variances
+library(compositions)   
+library(vegan)          
+library(phyloseq)       
+library(dplyr)          
+library(knitr)          
+library(kableExtra)    
+
+# 3) Teste de dispersão
+set.seed(123)
+bd_ait   <- betadisper(euc_dmat, meta$Group)
+bd_jac   <- betadisper(jac_dmat, meta$Group)
+disp_ait <- anova(bd_ait)
+disp_jac <- anova(bd_jac)
+
+disp_table <- tibble::tibble(
+  Distance = c("Aitchison", "Jaccard"),
+  F.value  = c(disp_ait$F[1],  disp_jac$F[1]),
+  P.value  = c(disp_ait$Pr[1], disp_jac$Pr[1])
+)
+
+#disp_table
+
+# 4) Exibe tabela
+disp_table %>%
+  knitr::kable(
+    digits  = 3,
+    caption = "Test for homogeneity of dispersion (betadisper)"
+  ) %>%
+  kableExtra::kable_styling(latex_options = c("hold_position", "scale_down"))
+```
+The results indicate that for both Aitchison (F = 4.11, p = 0.018) and Jaccard (F = 7.56, p = 0.0011) there was heterogeneity of dispersion between the groups. In other words, the multivariate variances of the four groups are not equal, which violates the PERMANOVA assumption of homogeneity of dispersion and can lead to false positives: the test may be detecting differences in dispersion, and not in the location (center) of the groups in the ordination space. We will use ANOSIM (Analysis of Similarity) and MRPP (Multiresponse Permutation Procedure) for this statistical analysis, since these methods are less sensitive to dispersion heterogeneity.
+
+## 5.3 ANOSIM (Analysis of Similarity) and MRPP (Multiresponse Permutation Procedure)
+```{r anosim_mrpp, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+# 0) Carrega bibliotecas
+library(compositions)   # ilr()
+library(vegan)          # anosim(), mrpp(), vegdist()
+library(phyloseq)       # otu_table(), sample_data()
+library(dplyr)          # tibble manipulation
+library(tibble)         # tibble()
+library(knitr)          # kable()
+library(kableExtra)     # kable_styling()
+
+# 3) ANOSIM
+set.seed(123)
+anosim_ait <- anosim(euc_dmat, meta$Group, permutations = 999)
+anosim_jac <- anosim(jac_dmat, meta$Group, permutations = 999)
+
+anosim_table <- tibble(
+  Distance    = c("Aitchison", "Jaccard"),
+  R.statistic = c(anosim_ait$statistic, anosim_jac$statistic),
+  P.value     = c(anosim_ait$signif,   anosim_jac$signif)
+)
+
+#anosim_table
+
+anosim_table %>%
+  kable(
+    digits  = 3,
+    caption = "ANOSIM: R statistic and p-value by distance metric"
+  ) %>%
+  kable_styling(latex_options = c("hold_position","scale_down"))
+
+# 4) MRPP
+mrpp_ait <- mrpp(euc_dmat, meta$Group, permutations = 999)
+mrpp_jac <- mrpp(jac_dmat, meta$Group, permutations = 999)
+
+mrpp_table <- tibble(
+  Distance    = c("Aitchison", "Jaccard"),
+  Delta       = c(mrpp_ait$delta,   mrpp_jac$delta),
+  C.statistic = c(mrpp_ait$C,       mrpp_jac$C),
+  P.value     = c(mrpp_ait$Pvalue,  mrpp_jac$Pvalue)
+)
+
+#mrpp_table
+
+mrpp_table %>%
+  kable(
+    digits  = 3,
+    caption = "MRPP: δ (Delta), C statistic and p-value by distance metric"
+  ) %>%
+  kable_styling(latex_options = c("hold_position","scale_down"))
+```
+
+The ANOSIM and MRPP results together reinforce that there is indeed a statistically significant difference in community composition among your four groups—but the strength of that effect is moderate to weak:
+
+ANOSIM
+R ≃ 0.14 (for both Aitchison and Jaccard) indicates that “between-group” distances are on average only 16 % larger than “within-group” distances.
+p < 0.022 shows this difference is unlikely due to chance, but the modest R value suggests low to moderate separation.
+
+MRPP
+The δ (delta) is the average within-group distance (≈ 19.5 for Aitchison, ≈ 0.62 for Jaccard).
+p = 0.001 demonstrates that this within-group homogeneity is far greater than expected under random permutations.
+
+In summary:
+Communities are more similar within each group than between groups (MRPP).
+However, the overall separation (R) is not strong (ANOSIM), so differences exist but are fairly subtle.
+
+### 5.3.1 Pairwise ANOSIM/MRPP
+```{r pairwise_anosim_mrpp, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+# Pairwise ANOSIM and MRPP between all group pairs
+library(compositions)   # ilr()
+library(vegan)          # anosim(), mrpp(), vegdist()
+library(phyloseq)       # otu_table(), sample_data()
+library(dplyr)          # %>%, mutate()
+library(tibble)         # tibble(), rownames_to_column()
+library(purrr)          # map_dfr()
+library(knitr)          # kable()
+library(kableExtra)     # kable_styling()
+
+# 2) Prepare group pairs
+groups <- levels(factor(meta$Group))
+combos <- combn(groups, 2, simplify = FALSE)
+
+# 3) Pairwise ANOSIM
+anosim_res <- map_dfr(combos, function(pair) {
+  sel       <- meta$Group %in% pair
+  sub_meta  <- meta[sel, ]
+  sub_euc   <- as.dist(as.matrix(euc_dmat)[sel, sel])
+  sub_jac   <- as.dist(as.matrix(jac_dmat)[sel, sel])
+  ait_res   <- anosim(sub_euc, sub_meta$Group, permutations = 999)
+  jac_res   <- anosim(sub_jac, sub_meta$Group, permutations = 999)
+  tibble(
+    Comparison = paste(pair, collapse = " vs "),
+    Metric     = c("Aitchison", "Jaccard"),
+    R.stat     = c(ait_res$statistic, jac_res$statistic),
+    P.value    = c(ait_res$signif,   jac_res$signif)
+  )
+})
+
+#anosim_res
+
+# 4) Display ANOSIM results
+anosim_res %>%
+  kable(
+    digits  = 3,
+    caption = "Pairwise ANOSIM: R statistic and p-value"
+  ) %>%
+  kable_styling(latex_options = c("hold_position", "scale_down"))
+
+# 5) Pairwise MRPP
+mrpp_res <- map_dfr(combos, function(pair) {
+  sel       <- meta$Group %in% pair
+  sub_meta  <- meta[sel, ]
+  sub_euc   <- as.dist(as.matrix(euc_dmat)[sel, sel])
+  sub_jac   <- as.dist(as.matrix(jac_dmat)[sel, sel])
+  ait_mrpp  <- mrpp(sub_euc, sub_meta$Group, permutations = 999)
+  jac_mrpp  <- mrpp(sub_jac, sub_meta$Group, permutations = 999)
+  tibble(
+    Comparison = paste(pair, collapse = " vs "),
+    Metric     = c("Aitchison", "Jaccard"),
+    Delta      = c(ait_mrpp$delta,    jac_mrpp$delta),
+    A.stat     = c(ait_mrpp$A,        jac_mrpp$A),
+    P.value    = c(ait_mrpp$Pvalue,   jac_mrpp$Pvalue)
+  )
+})
+
+#mrpp_res
+
+# 6) Display MRPP results
+mrpp_res %>%
+  kable(
+    digits  = 3,
+    caption = "Pairwise MRPP: δ (Delta), A statistic and p-value"
+  ) %>%
+  kable_styling(latex_options = c("hold_position", "scale_down"))
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+
+The pairwise tests tell a consistent story:
+
+Negative control vs Positive control
+ANOSIM:
+Aitchison R = 0.210, p = 0.030
+Jaccard R = 0.230, p = 0.030
+These R values (≈0.21–0.23) indicate low‐to‐moderate separation, but p < 0.05 confirms it is statistically significant.
+
+MRPP:
+Aitchison δ = 19.27, A = 0.028, p = 0.010
+Jaccard δ = 0.649, A = 0.040, p = 0.020
+The positive A‐statistics and p < 0.05 show within‐group similarity exceeds random expectation.
+
+Negative control vs Test group 1
+ANOSIM:
+R ≈ 0.08, p > 0.16 (not significant)
+
+MRPP:
+Aitchison δ = 19.22, A = 0.022, p = 0.001
+Jaccard δ = 0.599, A = 0.024, p = 0.044
+Here ANOSIM fails to detect a clear shift (low R, p > 0.05), but MRPP finds a small yet significant within‐group agreement (A ≈ 0.022–0.024, p < 0.05), suggesting subtle compositional differences.
+
+Negative control vs Test group 2
+ANOSIM:
+R ≈ 0.027–0.10, p > 0.17 (not significant)
+MRPP:
+Aitchison p = 0.21 (ns), Jaccard p = 0.438 (ns)
+Neither test shows significance, indicating no detectable community shift.
+
+Positive control vs Test group 1
+ANOSIM:
+Aitchison R = 0.39, p = 0.003
+Jaccard R = 0.31, p = 0.006
+These higher R values (0.31–0.39) reflect moderate separation, both highly significant.
+
+MRPP:
+Aitchison δ = 20.49, A = 0.028, p = 0.002
+Jaccard δ = 0.672, A = 0.028, p = 0.026
+Here ANOSIM detects a clear shift (higher R, 0.31–0.39, p <0.05) and MRPP finds a small yet significant within‐group agreement (A ≈ 0.028, p < 0.05), suggesting compositional differences.
+
+Positive control vs Test group 2
+ANOSIM:
+R ≈ 0.16–0.19, p > 0.08 (ns)
+
+MRPP:
+Aitchison δ = 19.89, A = 0.032, p = 0.024
+Jaccard δ = 0.636, A = 0.052, p = 0.014
+
+Test group 1 vs Test group 2
+ANOSIM:
+R ≈ -0.07–0.06, p > 0.24 (not significant)
+Test group 1 vs Test group 2	Aitchison	19.7888713	0.0067683843	0.176
+Test group 1 vs Test group 2	Jaccard	0.5845092	0.0343773409	0.021
+MRPP:
+Aitchison p = 0.062 (ns), Jaccard p = 0.021 (significant)
+This mixed result—significant only under Jaccard—again points to very subtle differences.
+
+Overall interpretation:
+
+Positive control exhibits the strongest separation:
+Versus Test group 1: ANOSIM R = 0.39 (p = 0.003), Jaccard R = 0.31 (p = 0.006);
+MRPP A = 0.028–0.028 (p < 0.03).
+Versus Negative control: ANOSIM R ≈ 0.21–0.23 (p = 0.03); MRPP A ≈ 0.028–0.040 (p < 0.02).
+Versus Test group 2: ANOSIM not significant (R ~ 0.16–0.19, p > 0.08), but MRPP detects a small effect (A ≈ 0.032–0.052, p < 0.03), indicating a subtle shift only picked up by MRPP.
+
+Negative control differs significantly from Positive control (both tests) and shows a weak but significant difference versus Test group 1 under MRPP only (A ≈ 0.022–0.024, p < 0.05), yet it is indistinguishable from Test group 2 (no test significant).
+
+Test group 1 vs Test group 2 have minimal separation:
+ANOSIM fails to detect any difference (R ≈ –0.07–0.06, p > 0.24).
+MRPP under Jaccard is significant (A = 0.034, p = 0.021) but not under Aitchison, again highlighting very subtle compositional shifts.
+
+Across all contrasts, effect sizes remain low to moderate (R < 0.4; A < 0.06). In sum, while some group pairs—especially those involving the Positive control—do differ in community composition, the overall differences are relatively modest and, in several cases, detectable only by the more sensitive MRPP test.
+
+# 6.0 Differential Abundance
+We are using ANCOMBC2 for differential abundance analysis
+```{r ANCOMBC2_dif_abund_init, eval=T, echo=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, comment = NA, 
+                      fig.width = 6, fig.height = 4)
+library(ANCOMBC)
+library(tidyverse)
+library(DT)
+options(DT.options = list(
+  initComplete = JS("function(settings, json) {",
+  "$(this.api().table().header()).css({'background-color': 
+  '#000', 'color': '#fff'});","}")))
+
+# It appears to be a package compatibility issue between the release version of 
+# phyloseq and lme4, a fresh installation of phyloseq might be needed
+# See this post: https://github.com/lme4/lme4/issues/743
+# remotes::install_github("joey711/phyloseq", force = TRUE)
+```
+
+## 6.1 Analysis of Compositions of Microbiomes with Bias Correction 2(ANCOMBC2)
+We performed the differential abundance analysis at genus level with ANCOMBC2
+```{r run_ANCOMBC2, eval=FALSE, echo=FALSE}
+# Atualizações frequentes e mudanças no algoritmo, incluindo no output. Revisar antes de usar!
+path <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Padilha_et_al_2025/Analysis'
+Dif_abundance = paste(path,"/Differential_abundance_genus/",sep = "")
+dir.create(Dif_abundance)
+set.seed(123)
+ps <- readRDS("ps1.dna.no_outlier.rds")
+# It is recommended that users utilize the default value of B, 
+# which is 100, or larger values for optimal performance.
+output_genus = ancombc2(data = ps, assay_name = "counts", tax_level = "Genus", #tax_level - aglomeração taxonômica
+                  fix_formula = "Group", rand_formula = NULL, #fix_formula - modelar as co-variáveis
+                  p_adj_method = "BH", pseudo_sens = TRUE, # "BH" para n pequeno, "Holm" para n grande
+                  prv_cut = 0.1, lib_cut = 1000, s0_perc = 0.05, #prv_cut - ponto de corte de prevalência 
+                  group = "Group", struc_zero = TRUE, neg_lb = TRUE, #group - variável primária
+                  alpha = 0.05, n_cl = 20, verbose = TRUE,
+                  global = TRUE, pairwise = TRUE, dunnet = TRUE, trend = FALSE, #Tipo de análise
+                  iter_control = list(tol = 1e-2, max_iter = 20, 
+                                      verbose = TRUE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = lme4::lmerControl(),
+                  mdfdr_control = list(fwer_ctrl_method = "BH", B = 100), # "BH" para n pequeno, "Holm" para n grande
+                  trend_control = list(contrast = list(matrix(c(1, 0, -1, 1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE),
+                                                       matrix(c(-1, 0, 1, -1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE),
+                                                       matrix(c(1, 0, 1, -1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE)),
+                                       node = list(2, 2, 1),
+                                       solver = "ECOS",
+                                       B = 100))
+
+save(file = "ANCOMBC.RData", list = "output_genus")
+
+# clean environment
+#rm(list = ls(all = TRUE))
+```
+
+### 6.2.1 Genus level
+#### Structural zeros 
+```{r struc_zeros, eval=T, echo=F}
+path <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Padilha_et_al_2025/Analysis'
+Dif_abundance = paste(path,"/Differential_abundance_genus/",sep = "")
+library(writexl)
+load('ANCOMBC.RData')
+tab_zero = output_genus$zero_ind
+tab_zero %>%
+    datatable(caption = "The detection of structural zeros on Genus level")
+FileName <- paste(Dif_abundance,"/Structural_zeros_genus.xlsx", sep = "")
+write_xlsx(tab_zero, FileName)
+```
+
+#### Primary analysis - Results for group - barchart
+Primary analysis in ANCOM-BC2 performs pairwise differential-abundance tests of each non-reference group against the reference level.
+```{r ANCOMBC2_primary_barplot, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE,fig.cap='Log fold change of primary-test taxa (ANCOM-BC2)',fig.align='center', fig.width=6, fig.height=4}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(writexl)
+
+load('ANCOMBC.RData')
+
+path <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Padilha_et_al_2025/Analysis'
+Dif_abundance = paste(path,"/Differential_abundance_genus/",sep = "")
+#As análises subsequentes são referentes a análise primária de abundância diferencial. Ainda existem as possibilidades da análise global, multiple pairwise comparisons, Dunnett's test e pattern analysis. Verificar scripts complementares.
+res_prim = output_genus$res
+
+#Exportando
+write_xlsx(res_prim, file.path(Dif_abundance, 'ANCOMBC2_primary_analysis.xlsx'))
+
+#Preparando o dado
+df_Group = res_prim %>%
+    dplyr::select(taxon, contains("Group")) 
+df_fig_Group1 = df_Group %>%
+    dplyr::filter(`diff_GroupPositive control` == 1 | 
+                  `diff_GroupTest group 1` == 1 |
+                  `diff_GroupTest group 2` == 1  ) %>%
+    dplyr::mutate(lfc1 = ifelse(`diff_GroupPositive control` == 1, 
+                                round(`lfc_GroupPositive control`, 2), 0),
+                  lfc2 = ifelse(`diff_GroupTest group 1` == 1, 
+                                round(`lfc_GroupTest group 1`, 2), 0),
+                  lfc3 = ifelse(`diff_GroupTest group 2` == 1, 
+                                round(`lfc_GroupTest group 2`, 2), 0)) %>%
+    tidyr::pivot_longer(cols = lfc1:lfc2:lfc3, 
+                        names_to = "group", values_to = "value") %>%
+    dplyr::arrange(taxon)
+
+df_fig_Group2 = df_Group %>%
+    dplyr::filter(`diff_GroupPositive control` == 1 | 
+                    `diff_GroupTest group 1` == 1 |
+                    `diff_GroupTest group 2` == 1) %>%
+    dplyr::mutate(lfc1 = ifelse(`passed_ss_GroupPositive control` == 1 & `diff_GroupPositive control` == 1, 
+                                "aquamarine3", "black"),
+                  lfc2 = ifelse(`passed_ss_GroupTest group 1` == 1 & `diff_GroupTest group 1` == 1, 
+                                "aquamarine3", "black"),
+                  lfc3 = ifelse(`passed_ss_GroupTest group 1` == 1 & `diff_GroupTest group 1` == 1, 
+                                "aquamarine3", "black")) %>%
+    tidyr::pivot_longer(cols = lfc1:lfc2:lfc3, 
+                        names_to = "group", values_to = "color") %>%
+    dplyr::arrange(taxon)
+
+df_fig_Group = df_fig_Group1 %>%
+    dplyr::left_join(df_fig_Group2, by = c("taxon", "group"))
+
+df_fig_Group$group = recode(df_fig_Group$group, 
+                          `lfc1` = "Positive control - Negative control",
+                          `lfc2` = "Test group 1 - Negative control",
+                          `lfc3` = "Test group 2 - Negative control")
+df_fig_Group$group = factor(df_fig_Group$group, 
+                          levels = c("Positive control - Negative control",
+                                     "Test group 1 - Negative control",
+                                     "Test group 2 - Negative control"))
+  
+lo = floor(min(df_fig_Group$value))
+up = ceiling(max(df_fig_Group$value))
+mid = (lo + up)/2
+
+#Heatmap
+heat_prim = df_fig_Group %>%
+  ggplot(aes(x = group, y = taxon, fill = value)) + 
+  geom_tile(color = "black") +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                       na.value = "white", midpoint = mid, limit = c(lo, up),
+                       name = NULL) +
+  geom_text(aes(group, taxon, label = value, color = color), size = 4) +
+  scale_color_identity(guide = "none") +
+  labs(x = NULL, y = NULL, title = "Log fold changes as compared to Negative control subjects") +
+  theme_minimal(base_size = 9) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+#heat_prim
+
+# 4) Save
+ggsave(file.path(Dif_abundance, 'ANCOMBC2_primary_heatmap.pdf'),
+       heat_prim, width = 180, height = 170, units = "mm", dpi = 300)
+ggsave(file.path(Dif_abundance, 'ANCOMBC2_primary_heatmap.png'),
+       heat_prim, width = 180, height = 170, units = "mm", dpi = 300)
+
+#Plot
+bar_prim = df_fig_Group %>%
+  ggplot(aes(x = taxon, y = value, fill = ifelse(value >= 0, "Positive LFC", "Negative LFC"))) +
+  geom_bar(stat = "identity", width = 0.7, color = "black",
+           position = position_dodge(width = 0.4)) +
+  labs(x = "Taxon", y = "Log fold change", title = "Log fold change of significant taxa") +
+  scale_fill_manual(values = c("Positive LFC" = "red", "Negative LFC" = "blue"),
+                    name = "Log fold change") +
+  facet_wrap(~group, nrow = 3) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 45, hjust = 1, face = "italic"))
+
+bar_prim
+
+# 4) Save
+ggsave(file.path(Dif_abundance, 'ANCOMBC2_primary_barchart.pdf'),
+       bar_prim, width = 180, height = 170, units = "mm", dpi = 300)
+ggsave(file.path(Dif_abundance, 'ANCOMBC2_primary_barchart.png'),
+       bar_prim, width = 180, height = 170, units = "mm", dpi = 300)
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+Any taxon highlighted in green indicates its successful passage through the sensitivity analysis for pseudo-count addition.
+
+#### Global analysis
+```{r ANCOMBC2_global_heatmap, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE,fig.cap='Global differential abundance (ANCOM-BC2) – taxa significant in any group contrast',fig.align='center', fig.width=6, fig.height=4}
+
+load('ANCOMBC.RData')
+
+# 0) Load libraries
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(writexl)
+
+# 1) Paths and output dir
+path    <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Padilha_et_al_2025/Analysis'
+outdir  <- file.path(path, 'Differential_abundance_genus')
+dir.create(outdir, showWarnings = FALSE, recursive = TRUE)
+
+# 2) Pull in primary LFCs and global test results
+res_prim   <- output_genus$res
+res_global <- output_genus$res_global
+
+# 3) Join per‐group LFCs to the global diff_abn flag
+df <- res_prim %>%
+  select(taxon,
+         lfc1 = `lfc_GroupPositive control`,
+         lfc2 = `lfc_GroupTest group 1`,
+         lfc3 = `lfc_GroupTest group 2`) %>%
+  left_join(
+    res_global %>% transmute(taxon,
+                             diff_abn    = diff_abn,
+                             passed_ss   = passed_ss),
+    by = "taxon"
+  ) %>%
+  # 4) Keep only those taxa flagged in the global test:
+  filter(diff_abn == TRUE) %>%
+  # 5) Build long form for values and colors
+  mutate(
+    lfc1 = round(lfc1, 2),
+    lfc2 = round(lfc2, 2),
+    lfc3 = round(lfc3, 2),
+    col1 = ifelse(passed_ss == TRUE, "aquamarine3", "black"),
+    col2 = ifelse(passed_ss == TRUE, "aquamarine3", "black"),
+    col3 = ifelse(passed_ss == TRUE, "aquamarine3", "black")
+  ) %>%
+  pivot_longer(cols = starts_with("lfc"),
+               names_to  = "grp", values_to = "value") %>%
+  pivot_longer(cols      = starts_with("col"),
+               names_to  = "grp2", values_to = "color") %>%
+  filter(sub("lfc", "col", grp) == grp2) %>%
+  select(taxon, grp, value, color) %>%
+  # 6) Recode group labels
+  mutate(
+    group = recode(grp,
+      lfc1 = "Positive control – Negative control",
+      lfc2 = "Test group 1 – Negative control",
+      lfc3 = "Test group 2 – Negative control"
+    ),
+    group = factor(group, levels = c(
+      "Positive control – Negative control",
+      "Test group 1 – Negative control",
+      "Test group 2 – Negative control"
+    ))
+  ) %>%
+  # 7) Order taxa within each facet
+  group_by(group) %>%
+  arrange(value) %>%
+  mutate(taxon = factor(taxon, levels = unique(taxon))) %>%
+  ungroup()
+
+# 8) Compute gradient limits
+lo  <- floor(min(df$value, na.rm = TRUE))
+up  <- ceiling(max(df$value, na.rm = TRUE))
+mid <- (lo + up) / 2
+
+# 9) Plot heatmap
+p <- ggplot(df, aes(x = group, y = taxon, fill = value)) +
+  geom_tile(color = "black") +
+  scale_fill_gradient2(
+    low      = "blue",
+    mid      = "white",
+    high     = "red",
+    midpoint = mid,
+    limit    = c(lo, up),
+    name     = "LFC"
+  ) +
+  geom_text(aes(label = ifelse(value != 0, value, ""), color = color),
+            size = 3) +
+  scale_color_identity(guide = "none") +
+  labs(x = NULL, y = NULL,
+       title = "Global ANCOM-BC2: Log Fold Changes (significant taxa)") +
+  theme_minimal(base_size = 9) +
+  theme(
+    plot.title      = element_text(hjust = 0.5),
+    axis.text.y     = element_text(face = "italic", size = 6),
+    axis.text.x     = element_text(size = 7),
+    strip.background= element_rect(fill = "grey80", color = NA),
+    panel.grid      = element_blank()
+  )
+
+#print(p)
+
+# 10) Save plot and data
+ggsave(file.path(outdir, 'ANCOMBC2_global_heatmap.pdf'),
+       p, width = 180, height = 170, units = "mm", dpi = 300)
+ggsave(file.path(outdir, 'ANCOMBC2_global_heatmap.png'),
+       p, width = 180, height = 170, units = "mm", dpi = 300)
+
+write_xlsx(df, file.path(outdir, 'ANCOMBC2_global_heatmap_data.xlsx'))
+
+# Bar global
+#Plot
+bar_global = df %>%
+  ggplot(aes(x = taxon, y = value, fill = ifelse(value >= 0, "Positive LFC", "Negative LFC"))) +
+  geom_bar(stat = "identity", width = 0.7, color = "black",
+           position = position_dodge(width = 0.4)) +
+  labs(x = "Taxon", y = "Log fold change", title = "Log fold change of significant taxa") +
+  scale_fill_manual(values = c("Positive LFC" = "red", "Negative LFC" = "blue"),
+                    name = "Log fold change") +
+  facet_wrap(~group, nrow = 3) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 45, hjust = 1, face = "italic"))
+
+#bar_global
+
+# Create a horizontal bar plot
+bar_global2 = df %>%
+  ggplot(aes(y = reorder(taxon, abs(value)), x = value, 
+             fill = ifelse(value >= 0, "Positive LFC", "Negative LFC"))) +
+  geom_bar(stat = "identity", width = 0.5, color = "black") +
+  labs(y = "", x = "Abundance", title = "") +
+  scale_fill_manual(values = c("Positive LFC" = "darkslategray3", "Negative LFC" = "coral"),
+                    name = "") +
+  facet_wrap(~group, nrow = 3)
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0),
+        axis.text.y = element_text(face = "italic", size = 10),  # Italicize taxon names
+        axis.text.x = element_text(size = 10),
+        strip.text.x = element_text(size = 8),
+        plot.margin = unit(c(1, 1, 1, 1), "lines"))
+
+# Display the plot
+bar_global2
+
+# 4) Save
+ggsave(file.path(outdir, 'ANCOMBC2_global_barchart.pdf'),
+       bar_global, width = 180, height = 170, units = "mm", dpi = 300)
+ggsave(file.path(outdir, 'ANCOMBC2_global_barchart.png'),
+       bar_global, width = 180, height = 170, units = "mm", dpi = 300)
+
+ggsave(file.path(outdir, 'ANCOMBC2_global_barchart2.pdf'),
+       bar_global2, width = 180, height = 170, units = "mm", dpi = 300)
+ggsave(file.path(outdir, 'ANCOMBC2_global_barchart2.png'),
+       bar_global2, width = 180, height = 170, units = "mm", dpi = 300)
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+Any taxon highlighted in green indicates its successful passage through the sensitivity analysis for pseudo-count addition.
+
+#### Pairwise analysis
+```{r ANCOMBC2_pairwise_heatmap, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE,fig.cap='Pairwise differential abundance (ANCOM-BC2) – all group–group contrasts',fig.align='center', fig.width=6, fig.height=4}
+load('ANCOMBC.RData')
+
+# 1) Pull in the pairwise results
+res_pair <- output_genus$res_pair
+
+# 2) Build df_fig_pair1: extract LFCs where diff==1
+df_fig_pair1 <- res_pair %>%
+  dplyr::filter(`diff_GroupPositive control` == 1 |
+                `diff_GroupTest group 1`      == 1 |
+                `diff_GroupTest group 2`      == 1) %>%
+  dplyr::mutate(
+    lfc1 = ifelse(`diff_GroupPositive control` == 1,
+                  round(`lfc_GroupPositive control`, 2), 0),
+    lfc2 = ifelse(`diff_GroupTest group 1` == 1,
+                  round(`lfc_GroupTest group 1`, 2), 0),
+    lfc3 = ifelse(`diff_GroupTest group 2` == 1,
+                  round(`lfc_GroupTest group 2`, 2), 0)
+  ) %>%
+  tidyr::pivot_longer(
+    cols      = lfc1:lfc3,
+    names_to  = "group",
+    values_to = "value"
+  ) %>%
+  dplyr::arrange(taxon)
+
+# 3) Build df_fig_pair2: extract colors where passed_ss & diff==1
+df_fig_pair2 <- res_pair %>%
+  dplyr::filter(`diff_GroupPositive control` == 1 |
+                `diff_GroupTest group 1`      == 1 |
+                `diff_GroupTest group 2`      == 1) %>%
+  dplyr::mutate(
+    lfc1 = ifelse(`passed_ss_GroupPositive control` == 1 &
+                  `diff_GroupPositive control` == 1,
+                  "aquamarine3", "black"),
+    lfc2 = ifelse(`passed_ss_GroupTest group 1` == 1 &
+                  `diff_GroupTest group 1` == 1,
+                  "aquamarine3", "black"),
+    lfc3 = ifelse(`passed_ss_GroupTest group 2` == 1 &
+                  `diff_GroupTest group 2` == 1,
+                  "aquamarine3", "black")
+  ) %>%
+  tidyr::pivot_longer(
+    cols      = lfc1:lfc3,
+    names_to  = "group",
+    values_to = "color"
+  ) %>%
+  dplyr::arrange(taxon)
+
+# 4) Join values and colors
+df_fig_pair <- df_fig_pair1 %>%
+  dplyr::left_join(df_fig_pair2, by = c("taxon", "group"))
+
+# 5) Recode and factor the group labels
+df_fig_pair$group <- recode(df_fig_pair$group,
+  `lfc1` = "Positive control - Negative control",
+  `lfc2` = "Test group 1 - Negative control",
+  `lfc3` = "Test group 2 - Negative control"
+)
+df_fig_pair$group <- factor(df_fig_pair$group,
+  levels = c(
+    "Positive control - Negative control",
+    "Test group 1 - Negative control",
+    "Test group 2 - Negative control"
+  )
+)
+
+# 6) Compute gradient limits
+lo  <- floor(min(df_fig_pair$value, na.rm = TRUE))
+up  <- ceiling(max(df_fig_pair$value, na.rm = TRUE))
+mid <- (lo + up) / 2
+
+# 7) Plot heatmap
+fig_pair <- df_fig_pair %>%
+  ggplot(aes(x = group, y = taxon, fill = value)) +
+    geom_tile(color = "black") +
+    scale_fill_gradient2(
+      low      = "blue",
+      high     = "red",
+      mid      = "white",
+      midpoint = mid,
+      limit    = c(lo, up),
+      name     = NULL
+    ) +
+    geom_text(aes(group, taxon, label = value, color = color), size = 4) +
+    scale_color_identity(guide = FALSE) +
+    labs(
+      x     = NULL,
+      y     = NULL,
+      title = "Log fold changes as compared to Negative control subjects"
+    ) +
+    theme_minimal() +
+    theme(plot.title = element_text(hjust = 0.5))
+
+# 8) Display
+#print(fig_pair)
+
+# 4) Save
+ggsave(file.path(outdir, 'ANCOMBC2_pairwise_heatmap.pdf'),
+       fig_pair, width = 180, height = 170, units = "mm", dpi = 300)
+ggsave(file.path(outdir, 'ANCOMBC2_pairwise_heatmap.png'),
+       fig_pair, width = 180, height = 170, units = "mm", dpi = 300)
+
+#Barchart pair
+bar_pair = df_fig_pair %>%
+  ggplot(aes(x = taxon, y = value, fill = ifelse(value >= 0, "Positive LFC", "Negative LFC"))) +
+  geom_bar(stat = "identity", width = 0.7, color = "black",
+           position = position_dodge(width = 0.4)) +
+  labs(x = "Taxon", y = "Log fold change", title = "Log fold change of pairwise comparisons") +
+  scale_fill_manual(values = c("Positive LFC" = "red", "Negative LFC" = "blue"),
+                    name = "Log fold change") +
+  facet_wrap(~group, nrow = 2) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.y = element_text(angle = 0, hjust = 1, face = "italic", size = 7)) + coord_flip()
+
+#bar_pair
+
+ggsave(file.path(outdir, 'ANCOMBC2_pairwise_barchart.pdf'),
+       bar_pair, width = 180, height = 170, units = "mm", dpi = 300)
+ggsave(file.path(outdir, 'ANCOMBC2_pairwise_barchart.png'),
+       bar_pair, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Create a horizontal bar plot
+bar_pair2 = df_fig_pair %>%
+  ggplot(aes(y = reorder(taxon, abs(value)), x = value, 
+             fill = ifelse(value >= 0, "Positive LFC", "Negative LFC"))) +
+  geom_bar(stat = "identity", width = 0.5, color = "black") +
+  labs(y = "", x = "Abundance", title = "") +
+  scale_fill_manual(values = c("Positive LFC" = "darkslategray3", "Negative LFC" = "coral"),
+                    name = "") +
+  facet_wrap(~group, nrow = 3)
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0),
+        axis.text.y = element_text(face = "italic", size = 10),  # Italicize taxon names
+        axis.text.x = element_text(size = 10),
+        strip.text.x = element_text(size = 8),
+        plot.margin = unit(c(1, 1, 1, 1), "lines"))
+
+# Display the plot
+bar_pair2
+
+ggsave(file.path(outdir, 'ANCOMBC2_pairwise_barchart2.pdf'),
+       bar_pair2, width = 180, height = 170, units = "mm", dpi = 300)
+ggsave(file.path(outdir, 'ANCOMBC2_pairwise_barchart2.png'),
+       bar_pair2, width = 180, height = 170, units = "mm", dpi = 300)
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+Any taxon highlighted in green indicates its successful passage through the sensitivity analysis for pseudo-count addition.
+
+# 7.0 Session info
+```{r session_info, eval=TRUE, echo=F}
+sessionInfo()
+```
