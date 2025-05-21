@@ -1,0 +1,1124 @@
+---
+title: "Este é o workflow para genomas bacterianos"
+author: "Dr. Otávio von Ameln Lovison"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 3
+    latex_engine: xelatex
+  word_document:
+    toc: yes
+    toc_depth: 5
+  html_document:
+    df_print: paged
+    theme: cerulean
+    highlight: haddock
+    toc: yes
+    toc_depth: 3
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+    code_folding: show
+always_allow_html: yes
+header-includes:
+  - \usepackage{float}
+  - \usepackage{placeins}           # Para usar \FloatBarrier
+  - \usepackage[font=small]{caption} # Legendas mais ajustadas
+---
+
+```{r setup, include = FALSE}
+reticulate::use_condaenv("genomics", required = TRUE)
+# Este primeiro chunk deve ser executado sempre que qualquer análise for ser realizada.
+# Diretório de análise
+# ---- 1. CARREGA PACOTES E OPÇÕES GLOBAIS ----
+library(tidyverse)      # dplyr, ggplot2, readr, purrr
+library(knitr)          # opts_chunk, opts_knit
+
+# Número de threads padrão para todas as etapas multi-thread
+threads <- 8
+
+path <- '/home/local.hcpa.ufrgs.br/olovison/Scripts_workflows/Genomics_workflow/Genomas_enterobacter_2023'
+knitr::opts_knit$set(root.dir = path)
+
+# Configurações globais de chunk
+knitr::opts_chunk$set(
+  collapse   = TRUE,
+  echo       = TRUE,
+  message    = FALSE,
+  warning    = FALSE,
+  comment    = "#>",
+  
+  # Impressão de múltiplos plots em ordem
+  fig.show   = "hold",     # <-- agrupa plots de um mesmo chunk
+  fig.align  = "center",
+  fig.width  = 8,          # redimensione a gosto (em polegadas)
+  fig.height = 7,
+  dpi        = 300,
+  out.width  = "\\textwidth", # ajusta largura ao texto
+
+  # Para forçar posição “aqui” dos floats
+  fig.pos    = "H",         # requer \usepackage{float}
+  results    = 'asis'
+)
+options(knitr.table.format = "latex")
+```
+
+```{r desc_workflow, eval=F, echo=FALSE}
+# Este documento apresenta um workflow completo, modular e automatizado para análise
+# de genomas bacterianos no RStudio. O pipeline cobre desde os dados brutos de
+# sequenciamento até:
+#   • montagem de genoma (Illumina, Nanopore, híbrida),
+#   • avaliação de qualidade (QUAST, BUSCO),
+#   • anotação genômica (PGAP),
+#   • tipagem (MLST, cgMLST),
+#   • detecção de genes de resistência (ResFinder Plus) e virulência (VFDB),
+#   • análise de pangenoma (Roary ou Panaroo),
+#   • construção de árvore filogenética baseada em SNPs (Snippy, Parsnp ou kSNP).
+# Três cenários de input são contemplados:
+#   1) somente short-reads Illumina;
+#   2) somente long-reads Oxford Nanopore;
+#   3) montagem híbrida (Illumina + ONT).
+# Todas as ferramentas são open-source e o foco é permitir que um usuário
+# inexperiente execute o pipeline integralmente e gere um relatório PDF/HTML/Word.
+# Limpa ambiente
+rm(list = ls(all = TRUE))
+```
+
+# 0 - Study description
+
+```{r download_main_data, eval=FALSE, echo=FALSE}
+##Link for the repository containing the phyloseq object for all subsequent analyses.
+#https://github.com/otaviolovison/Hemicell_timeseries_2025
+
+# clean environment
+rm(list = ls(all = TRUE))
+```
+
+# 1.0 Quality control and pre processing
+Samples list
+```{r data_prep, eval=F, echo=FALSE}
+# ---------------------------------------------------------------------
+# 1.0 CONFIGURAÇÃO DE PASTAS PARA QC E PRÉ-PROCESSAMENTO
+# ---------------------------------------------------------------------
+path       <- '/home/local.hcpa.ufrgs.br/olovison/Scripts_workflows/Genomics_workflow/Genomas_enterobacter_2023'
+QC_dir     <- file.path(path, "QC")             # Quality Control (FastQC/MultiQC)
+trim_dir   <- file.path(path, "trimmed_reads")  # Reads pós-trimagem
+dir.create(QC_dir,   recursive = TRUE, showWarnings = FALSE)
+dir.create(trim_dir, recursive = TRUE, showWarnings = FALSE)
+
+# ---------------------------------------------------------------------
+# 2.0 LISTA DE AMOSTRAS DINÂMICA (Illumina + MinION)
+# ---------------------------------------------------------------------
+# Illumina: 2 arquivos *_R1.fastq.gz e *_R2.fastq.gz em fastq/Illumina
+illumina_dir     <- file.path(path, "fastq", "Illumina")
+illumina_files   <- list.files(illumina_dir, "\\.fastq\\.gz$", full.names = TRUE)
+illumina_samples <- unique(
+  sub("_R[12]\\.fastq\\.gz$", "", basename(illumina_files))
+)
+
+# MinION: vários .fastq dentro de pastas fastq/minIon/<sample>/
+minion_base      <- file.path(path, "fastq", "minIon")
+minion_samples   <- list.dirs(minion_base, full.names = FALSE, recursive = FALSE)
+
+# Combina as duas listas
+samples <- sort(c(illumina_samples, minion_samples))
+
+# Para inspeção
+samples
+```
+
+## 1.1 Illumina (FastQC + Trimmomatic)
+```{bash illumina_qc, eval=F, echo=FALSE}
+# ------------------------------------------------------------------------------
+# QC Illumina via conda run (não precisa de 'conda activate')
+# ------------------------------------------------------------------------------
+
+# 1) Define paths
+BASE_PATH="/home/local.hcpa.ufrgs.br/olovison/Scripts_workflows/Genomics_workflow/Genomas_enterobacter_2023"
+FASTQ_DIR="${BASE_PATH}/fastq"
+QC_DIR="${BASE_PATH}/QC"
+TRIM_DIR="${BASE_PATH}/Trimmed_reads"
+mkdir -p "${FASTQ_DIR}" "${QC_DIR}" "${TRIM_DIR}"
+
+# 2) Threads
+threads=20
+
+# 3) Lista de amostras
+readarray -t samples < <(
+  ls "${FASTQ_DIR}"/*_R1.fastq.gz 2>/dev/null | \
+    xargs -n1 basename | sed 's/_R1.fastq.gz//'
+)
+if [ ${#samples[@]} -eq 0 ]; then
+  echo "⚠️  Nenhum FASTQ R1 em ${FASTQ_DIR}" >&2
+  exit 1
+fi
+echo "Amostras encontradas: ${samples[*]}"
+
+# 4) Caminho do ambiente e adaptadores
+ENV_BASE=$(conda info --base)
+ENV_PREFIX="${ENV_BASE}/envs/genomics"
+ADAPTERS="${ENV_PREFIX}/share/trimmomatic-*/adapters/TruSeq3-PE.fa"
+
+# 5) FastQC
+for s in "${samples[@]}"; do
+  echo "→ FastQC: $s"
+  conda run -n genomics fastqc \
+    --threads "${threads}" \
+    --outdir "${QC_DIR}" \
+    "${FASTQ_DIR}/${s}_R1.fastq.gz" \
+    "${FASTQ_DIR}/${s}_R2.fastq.gz"
+done
+
+# 6) Trimmomatic PE
+for s in "${samples[@]}"; do
+  echo "→ Trimmomatic: $s"
+  conda run -n genomics trimmomatic PE \
+    -threads "${threads}" \
+    "${FASTQ_DIR}/${s}_R1.fastq.gz" "${FASTQ_DIR}/${s}_R2.fastq.gz" \
+    "${TRIM_DIR}/${s}_R1.paired.fastq.gz"   "${TRIM_DIR}/${s}_R1.unpaired.fastq.gz" \
+    "${TRIM_DIR}/${s}_R2.paired.fastq.gz"   "${TRIM_DIR}/${s}_R2.unpaired.fastq.gz" \
+    ILLUMINACLIP:"${ADAPTERS}":2:30:10 \
+    LEADING:20 \
+    TRAILING:20 \
+    SLIDINGWINDOW:4:20 \
+    MINLEN:50
+done
+
+echo "✅ QC Illumina concluído."
+```
+
+## 1.2 minIon (FastCat + NanoPlot + Filtlong)
+```{bash minion_QC, eval=F, echo=FALSE}
+
+# 0) Garante que o env esteja ativo (necessário dentro de alguns kernels)
+eval "$(/home/local.hcpa.ufrgs.br/olovison/miniconda3/bin/conda shell.bash hook)"
+conda activate genomics
+
+# 1) Definições de paths e variáveis
+BASE_PATH="/home/local.hcpa.ufrgs.br/olovison/Scripts_workflows/Genomics_workflow/Genomas_enterobacter_2023"
+ont_raw_dir="${BASE_PATH}/fastq/minIon"            # subpastas por amostra
+combined_dir="${BASE_PATH}/QC/minion_combined"     # saída fastcat (.fastq.gz + relatório)
+nanoqc_dir="${BASE_PATH}/QC/minion_nanoqc"         # saída NanoPlot
+filtlong_dir="${BASE_PATH}/QC/minion_filtlong"     # saída Filtlong (.fastq)
+threads=8
+
+# 2) Cria diretórios de saída
+mkdir -p "${combined_dir}" "${nanoqc_dir}" "${filtlong_dir}"
+
+# 3) Loop por amostra (cada subpasta em ont_raw_dir)
+for sample_dir in "${ont_raw_dir}"/*; do
+  sample=$(basename "$sample_dir")
+  echo "→ Processando amostra ${sample}"
+
+  # 3.1) Recursivamente, coleta todos os FASTQ(.gz) daquela amostra
+  mapfile -d '' fq_files < <(
+    find "${sample_dir}" -type f -name '*.fastq.gz' -print0
+  )
+  if [ ${#fq_files[@]} -eq 0 ]; then
+    echo "   ⚠️  Nenhum .fastq.gz em ${sample_dir}, pulando."
+    continue
+  fi
+
+  # 3.2) fastcat: gera sumário e concatena para stdout
+  #   -x, --recurse            : procura recursivamente
+  #   -s, --sample NAME        : adiciona coluna sample_name
+  #   -f, --file SUMMARY       : grava sumário por input file
+  report_txt="${combined_dir}/${sample}_fastcat_summary.tsv"
+  echo "   • fastcat: gerando resumo → ${report_txt}"
+  fastcat \
+    -x \
+    -s "${sample}" \
+    -f "${report_txt}" \
+    "${fq_files[@]}"
+
+  # 3.3) Concatena reads e comprime
+  combined_fq="${combined_dir}/${sample}.fastq.gz"
+  echo "   • fastcat: concatenando ${#fq_files[@]} arquivos → ${combined_fq}"
+  fastcat \
+    -x \
+    -s "${sample}" \
+    "${fq_files[@]}" \
+  | gzip > "${combined_fq}"
+
+  # 3.4) Verifica se o FASTQ combinado não está vazio
+  if [ ! -s "${combined_fq}" ]; then
+    echo "   ⚠️  ${combined_fq} está vazio, pulando NanoPlot e Filtlong."
+    continue
+  fi
+
+  # 3.5) NanoPlot: gráficos de qualidade/comprimento
+  #   --fastq <arquivo>         : FASTQ de entrada (.gz aceito)
+  #   --outdir <dir>            : saída de plots e HTML
+  #   --threads <n>             : threads
+  #   --plots hex kde histogram : tipos de plot
+  #   --loglength               : escala log no comprimento
+  echo "   • NanoPlot: avaliando ${combined_fq}"
+  NanoPlot \
+    --fastq "${combined_fq}" \
+    --outdir "${nanoqc_dir}/${sample}" \
+    --threads ${threads} \
+    --plots hex kde histogram \
+    --loglength
+
+  # 3.6) Filtlong: filtra por qualidade e tamanho
+  #   --min_length <bp>         : descarta reads <1 kb
+  #   --keep_percent <pct>      : mantém top pct% bases
+  filtered_fq="${filtlong_dir}/${sample}_filtlong.fastq"
+  echo "   • Filtlong: filtrando → ${filtered_fq}"
+  filtlong \
+    --min_length 1000 \
+    --keep_percent 90 \
+    "${combined_fq}" \
+  > "${filtered_fq}"
+
+done
+
+echo "✅ Fluxo fastcat → NanoPlot → Filtlong concluído para todas as amostras"
+```
+
+### Quality control report (MultiQC)
+```{bash multiQC, eval=F, echo=FALSE}
+# ------------------------------------------------------------------------------
+# Pós-trim QC Illumina e agregação com MultiQC via conda run (com MultiQC instalado)
+# ------------------------------------------------------------------------------
+
+# 1) Definições de paths e parâmetros (como antes)
+BASE_PATH="/home/local.hcpa.ufrgs.br/olovison/Scripts_workflows/Genomics_workflow/Genomas_enterobacter_2023"
+TRIM_DIR="${BASE_PATH}/Trimmed_reads"
+QC_DIR="${BASE_PATH}/QC"
+POST_DIR="${QC_DIR}/post_trim"
+MQC_DIR="${QC_DIR}/multiqc_report"
+threads=20
+
+mkdir -p "${TRIM_DIR}" "${QC_DIR}" "${POST_DIR}" "${MQC_DIR}"
+
+# 2) Lista de amostras pós-trim
+readarray -t samples < <(
+  ls "${TRIM_DIR}"/*_R1.paired.fastq.gz 2>/dev/null | \
+    xargs -n1 basename | sed 's/_R1.paired.fastq.gz//'
+)
+if [ ${#samples[@]} -eq 0 ]; then
+  echo "⚠️  Nenhum FASTQ pós-trim em ${TRIM_DIR}" >&2
+  exit 1
+fi
+
+echo "Amostras para QC pós-trim: ${samples[*]}"
+
+# 3) FastQC pós-trim
+for s in "${samples[@]}"; do
+  echo "→ FastQC pós-trim: $s"
+  conda run -n genomics fastqc \
+    --threads "${threads}" \
+    --outdir "${POST_DIR}" \
+    "${TRIM_DIR}/${s}_R1.paired.fastq.gz" \
+    "${TRIM_DIR}/${s}_R2.paired.fastq.gz"
+done
+
+# 4) MultiQC agregando tudo em QC_DIR
+echo "→ MultiQC agregando resultados em ${MQC_DIR}"
+conda run -n genomics multiqc \
+  "${QC_DIR}" \
+  -o "${MQC_DIR}" \
+  --filename multiqc_posttrim.html
+
+echo "✅ QC pós-trim e MultiQC concluídos."
+```
+
+## 1.3 Contaminants removal (BBMap/BBSplit) (standby)
+```{r contam_BBM_BBS, eval=F, echo=FALSE}
+
+rm(list = ls(all = TRUE))
+```
+
+# 2.0 De novo assembly
+## 2.1 Illumina (SPAdes)
+```{bash illumina_spades, eval=F, echo=FALSE}
+# ------------------------------------------------------------------------------
+# 2.1 Montagem Illumina com SPAdes via conda run
+# ------------------------------------------------------------------------------
+
+# 1) Definições de paths e parâmetros
+BASE_PATH="/home/local.hcpa.ufrgs.br/olovison/Scripts_workflows/Genomics_workflow/Genomas_enterobacter_2023"
+TRIM_DIR="${BASE_PATH}/Trimmed_reads"
+ASM_DIR="${BASE_PATH}/assemblies/spades"
+threads=8
+
+# cria diretórios
+mkdir -p "${TRIM_DIR}" "${ASM_DIR}"
+
+# 2) Lista de amostras (mesma lógica dos QC)
+readarray -t samples < <(
+  ls "${TRIM_DIR}"/*_R1.paired.fastq.gz 2>/dev/null | \
+    xargs -n1 basename | sed 's/_R1.paired.fastq.gz//'
+)
+if [ ${#samples[@]} -eq 0 ]; then
+  echo "⚠️  Nenhum FASTQ pós-trim em ${TRIM_DIR}" >&2
+  exit 1
+fi
+echo "Amostras para montagem SPAdes: ${samples[*]}"
+
+# 3) SPAdes para cada amostra
+for s in "${samples[@]}"; do
+  echo "→ SPAdes: $s"
+  conda run -n genomics spades.py \
+    -1 "${TRIM_DIR}/${s}_R1.paired.fastq.gz" \
+    -2 "${TRIM_DIR}/${s}_R2.paired.fastq.gz" \
+    -o "${ASM_DIR}/${s}" \
+    -t "${threads}" \
+    --careful \
+    --cov-cutoff auto
+done
+
+echo "✅ Montagem SPAdes concluída em ${ASM_DIR}"
+```
+
+## 2.2 minIon (Flye + Pilon?)
+```{bash minion_flye_pilon, eval=F, echo=FALSE}
+# ------------------------------------------------------------------------------
+# 2.2 Montagem ONT com Flye via conda run
+# ------------------------------------------------------------------------------
+
+# Definições de paths e parâmetros
+BASE_PATH="/home/local.hcpa.ufrgs.br/olovison/Scripts_workflows/Genomics_workflow/Genomas_enterobacter_2023"
+ONT_DIR="${BASE_PATH}/ONT_trim"           # pasta com reads longas filtradas (_filtlong.fastq)
+ASM_FLYE_DIR="${BASE_PATH}/assemblies/flye"
+threads=8                                  # número de threads para paralelizar
+genome_size="5m"                          # tamanho estimado do genoma (5 megabases)
+
+# Cria os diretórios se não existirem
+mkdir -p "${ONT_DIR}" "${ASM_FLYE_DIR}"
+
+# Verifica se há arquivos de long-reads para montar
+shopt -s nullglob
+files=( "${ONT_DIR}"/*_filtlong.fastq )
+if [ ${#files[@]} -eq 0 ]; then
+  echo "⚠️  Nenhum FASTQ de long-reads encontrado em ${ONT_DIR}" >&2
+  exit 1
+fi
+
+# Para cada arquivo de long-reads filtrado, roda Flye
+for f in "${files[@]}"; do
+  sample=$(basename "$f" _filtlong.fastq)
+  echo "→ Flye montagem para amostra: $sample"
+  conda run -n genomics flye \
+    --nano-raw "$f" \
+    --out-dir "${ASM_FLYE_DIR}/${sample}" \
+    --genome-size "${genome_size}" \
+    --threads "${threads}"
+done
+
+echo "✅ Montagem ONT com Flye concluída em ${ASM_FLYE_DIR}"
+```
+
+## 2.3 Hibrid assembly with Unicycler
+```{bash unicycler, eval=F, echo=FALSE}
+# ------------------------------------------------------------------------------
+# 2.3 Montagem Híbrida com Unicycler via conda run
+# ------------------------------------------------------------------------------
+
+# Definições de paths e parâmetros
+BASE_PATH="/home/local.hcpa.ufrgs.br/olovison/Scripts_workflows/Genomics_workflow/Genomas_enterobacter_2023"
+TRIM_DIR="${BASE_PATH}/Trimmed_reads"           # Illumina pós-trim
+ONT_DIR="${BASE_PATH}/ONT_trim"                 # Long-reads filtradas
+ASM_UNICYCLER_DIR="${BASE_PATH}/assemblies/unicycler"
+threads=8                                       # threads para paralelizar
+mode="normal"                                   # *normal* (equilíbrio), *bold* (mais fechamento), ou *conservative* (mais cauteloso)
+
+# Cria os diretórios se não existirem
+mkdir -p "${TRIM_DIR}" "${ONT_DIR}" "${ASM_UNICYCLER_DIR}"
+
+# Lista de amostras (baseado em trimmed Illumina)
+readarray -t samples < <(
+  ls "${TRIM_DIR}"/*_R1.paired.fastq.gz 2>/dev/null | \
+    xargs -n1 basename | sed 's/_R1.paired.fastq.gz//'
+)
+if [ ${#samples[@]} -eq 0 ]; then
+  echo "⚠️  Nenhum FASTQ Illumina pós-trim em ${TRIM_DIR}" >&2
+  exit 1
+fi
+
+# Roda o Unicycler para cada amostra, se existir long-reads correspondente
+for s in "${samples[@]}"; do
+  long_reads="${ONT_DIR}/${s}_filtlong.fastq"
+  if [ ! -f "${long_reads}" ]; then
+    echo "⚠️  Long-reads não encontradas para ${s}, pulando Unicycler híbrido."
+    continue
+  fi
+  echo "→ Unicycler montagem híbrida para amostra: $s"
+  conda run -n genomics unicycler \
+    -1 "${TRIM_DIR}/${s}_R1.paired.fastq.gz" \
+    -2 "${TRIM_DIR}/${s}_R2.paired.fastq.gz" \
+    -l "${long_reads}" \
+    -o "${ASM_UNICYCLER_DIR}/${s}" \
+    -t "${threads}" \
+    --mode "${mode}"
+done
+
+echo "✅ Montagem híbrida Unicycler concluída em ${ASM_UNICYCLER_DIR}"
+```
+
+# 3.0 Draft genomes evaluation (Quast + Busco)
+```{bash Quast_BUSCO, eval=F, echo=FALSE}
+# ------------------------------------------------------------------------------
+# 3. Avaliação de montagem: QUAST + BUSCO via conda run
+# ------------------------------------------------------------------------------
+
+# Descrição:
+# QUAST avalia estatísticas de contigs (nº contigs, N50, L50, total length, largest contig, GC%, etc.) 
+# BUSCO verifica completude do genoma via genes ortólogos universais (ex.: bacteria_odb10)
+#
+# Critérios de qualidade:
+# - Poucos dezenas de contigs ou menos
+# - N50 próximo ao tamanho de replicons esperados
+# - BUSCO > 90%
+# Montagens com baixa qualidade devem ser reavaliadas (cobertura, contaminantes, dados long-read).
+
+# ------------------------------------------------------------------------------
+# 3. Avaliação de montagem: QUAST + BUSCO com saída BUSCO dentro de cada pasta
+# ------------------------------------------------------------------------------
+
+BASE_PATH="/home/local.hcpa.ufrgs.br/olovison/Scripts_workflows/Genomics_workflow/Genomas_enterobacter_2023"
+ASM_SPADES_DIR="${BASE_PATH}/assemblies/spades"
+ASM_FLYE_DIR="${BASE_PATH}/assemblies/flye"
+ASM_UNICYCLER_DIR="${BASE_PATH}/assemblies/unicycler"
+QUAST_DIR="${BASE_PATH}/quast"
+BUSCO_DIR="${BASE_PATH}/busco"
+threads=20
+
+# Cria diretórios de saída
+for asm in spades flye unicycler; do
+  mkdir -p "${QUAST_DIR}/${asm}" "${BUSCO_DIR}/${asm}"
+done
+
+# Lista de amostras baseado em SPAdes
+readarray -t samples < <(
+  ls -d "${ASM_SPADES_DIR}"/*/ 2>/dev/null | xargs -n1 basename
+)
+if [ ${#samples[@]} -eq 0 ]; then
+  echo "⚠️  Nenhuma montagem SPAdes em ${ASM_SPADES_DIR}" >&2
+  exit 1
+fi
+
+# Loop por assembler e amostra
+for asm in spades flye unicycler; do
+  for s in "${samples[@]}"; do
+
+    # 1) Localiza o FASTA na pasta da amostra
+    case "$asm" in
+      spades)    dir="${ASM_SPADES_DIR}/${s}"    ;;
+      flye)      dir="${ASM_FLYE_DIR}/${s}"      ;;
+      unicycler) dir="${ASM_UNICYCLER_DIR}/${s}" ;;
+    esac
+    fasta_file=$(ls "${dir}"/*.fasta 2>/dev/null | head -n1)
+    if [ ! -f "$fasta_file" ]; then
+      echo "⚠️  $asm: nenhum .fasta em ${dir}, pulando ${s}"
+      continue
+    fi
+
+    # 2) QUAST (estatísticas de contigs)
+    echo "→ QUAST (${asm}) em ${s}"
+    conda run -n genomics_eval quast.py \
+      "$fasta_file" \
+      -o "${QUAST_DIR}/${asm}/${s}" \
+      -t "${threads}" \
+      --min-contig 500 \
+      
+    # 3) BUSCO (completude genômica)
+    echo "→ BUSCO (${asm}) em ${s}"
+    outdir="${BUSCO_DIR}/${asm}/${s}"
+    mkdir -p "${outdir}"
+    (
+      cd "${outdir}"
+      # prefixo de saída é o nome da amostra; cria <s>_run/ em outdir
+      conda run -n genomics_eval busco \
+        -i "${fasta_file}" \
+        -l bacteria_odb10 \
+        -m genome \
+        -c "${threads}" \
+        -o "${s}"
+    )
+
+  done
+done
+
+echo "✅ Avaliação de montagem (QUAST + BUSCO) concluída."
+```
+
+## 3.1 Draft genomes evaluation output
+```{r draft_eval_output, eval=F, echo=FALSE}
+# ---- Bibliotecas ----
+library(tidyverse)   # readr, dplyr, ggplot2
+library(janitor)     # clean_names
+library(openxlsx)    # write.xlsx
+
+# ---- Paths e listas ----
+path       <- '/home/local.hcpa.ufrgs.br/olovison/Scripts_workflows/Genomics_workflow/Genomas_enterobacter_2023'
+quast_dir  <- file.path(path, "quast")
+# Detecta assemblers com resultados
+assemblies <- list.dirs(quast_dir, full.names = FALSE, recursive = FALSE)
+
+# Detecta samples a partir do primeiro assembler
+if (!exists("samples")) {
+  samples <- list.dirs(file.path(quast_dir, assemblies[1]), full.names = FALSE, recursive = FALSE)
+}
+
+# Diretórios de saída
+tables_dir <- file.path(path, "tables")
+figs_dir   <- file.path(path, "figures")
+dir.create(tables_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figs_dir,   recursive = TRUE, showWarnings = FALSE)
+
+# ---- Exportação ----
+export_table <- function(df, name) {
+  write_csv(df, file.path(tables_dir, paste0(name, ".csv")))
+  write_tsv(df, file.path(tables_dir, paste0(name, ".tsv")))
+  write.xlsx(df, file.path(tables_dir, paste0(name, ".xlsx")), rowNames = FALSE)
+}
+
+# ---- Importa relatórios QUAST completos ----
+quast_list <- list()
+for (asm in assemblies) {
+  for (s in samples) {
+    rpt <- file.path(quast_dir, asm, s, "transposed_report.tsv")
+    if (!file.exists(rpt)) next
+    df_raw <- read_tsv(rpt, show_col_types = FALSE)
+    clean_df <- df_raw %>% clean_names()
+    cols <- names(clean_df)
+    # Identifica colunas após clean_names
+    assembly_col     <- "assembly"
+    contigs_col      <- cols[grep("contigs", cols, ignore.case = TRUE)][1]
+    largest_col      <- cols[grep("largest_contig", cols, ignore.case = TRUE)][1]
+    total_length_col <- cols[grep("total_length", cols, ignore.case = TRUE)][1]
+    n50_col          <- cols[grep("^n50$", cols, ignore.case = TRUE)][1]
+    # Verifica colunas encontradas
+    required <- c(assembly_col, contigs_col, largest_col, total_length_col, n50_col)
+    if (any(is.na(required))) {
+      warning(sprintf("Colunas faltando em %s/%s: %s", asm, s, paste(required, collapse = ", ")))
+      next
+    }
+    df <- clean_df %>%
+      select(
+        assembly_file = all_of(assembly_col),
+        raw_contigs    = all_of(contigs_col),
+        raw_largest    = all_of(largest_col),
+        raw_total      = all_of(total_length_col),
+        raw_n50        = all_of(n50_col)
+      ) %>%
+      rename(
+        contigs        = raw_contigs,
+        largest_contig = raw_largest,
+        total_length   = raw_total,
+        N50            = raw_n50
+      ) %>%
+      mutate(
+        assembler = asm,
+        sample    = s
+      )
+    quast_list[[paste(asm, s, sep = "_")]] <- df
+  }
+}
+quast_metrics <- bind_rows(quast_list)
+
+# ---- Exporta QUAST metrics ----
+export_table(quast_metrics, "quast_metrics")
+
+# ---- Plot: N50 por assembler ----
+if (nrow(quast_metrics) > 0) {
+  p_n50 <- quast_metrics %>%
+    ggplot(aes(x = assembler, y = N50 / 1000, fill = assembler)) +
+    geom_boxplot() +
+    labs(
+      x = "Assembler",
+      y = "N50 (kb)",
+      title = "Distribuição de N50 por Assembler"
+    ) +
+    theme_minimal()
+  ggsave(file.path(figs_dir, "n50_comparison.pdf"), p_n50,
+         width = 180, height = 170, units = "mm", dpi = 300)
+  ggsave(file.path(figs_dir, "n50_comparison.png"), p_n50,
+         width = 180, height = 170, units = "mm", dpi = 300)
+} else {
+  message("⚠️ Nenhum dado de QUAST importado. Verifique report.tsv completos.")
+}
+```
+
+# 4.0 Annotation (Prokka)
+```{bash annot_prokka, eval=F, echo=FALSE}
+# ------------------------------------------------------------------------------
+# 4. Anotação Genômica com Prokka (instalado no sistema)
+# ------------------------------------------------------------------------------
+
+# 1) Definições de paths e parâmetros
+BASE_PATH="/home/local.hcpa.ufrgs.br/olovison/Scripts_workflows/Genomics_workflow/Genomas_enterobacter_2023"
+ASM_DIR="${BASE_PATH}/assemblies/spades"    # ou flye/unicycler conforme o assembler
+ANNOT_DIR="${BASE_PATH}/annotation_prokka"
+THREADS=8
+KINGDOM="Bacteria"
+PREFIX_TAG="PROKKA"
+
+# 2) Cria diretório de saída
+mkdir -p "${ANNOT_DIR}"
+
+# 3) Lista de amostras (baseado em SPAdes)
+readarray -t samples < <(
+  ls "${ASM_DIR}"/*/contigs.fasta 2>/dev/null | \
+    xargs -n1 dirname | \
+    xargs -n1 basename
+)
+if [ ${#samples[@]} -eq 0 ]; then
+  echo "⚠️  Nenhuma montagem encontrada em ${ASM_DIR}" >&2
+  exit 1
+fi
+
+echo "Amostras para anotação Prokka: ${samples[*]}"
+
+# 4) Loop de anotação com Prokka
+for s in "${samples[@]}"; do
+  echo "→ Anotando ${s}"
+  contig_file="${ASM_DIR}/${s}/contigs.fasta"
+  outdir="${ANNOT_DIR}/${s}"
+  mkdir -p "${outdir}"
+
+  /home/local.hcpa.ufrgs.br/olovison/prokka/bin/prokka \
+    --kingdom "${KINGDOM}" \
+    --outdir "${outdir}" \
+    --prefix "${s}" \
+    --locustag "${PREFIX_TAG}" \
+    --cpus "${THREADS}" \
+    --addgenes \
+    --force \
+    "${contig_file}"
+done
+
+# 5) Finalização
+echo "✅ Anotação Prokka concluída para todas as amostras em ${ANNOT_DIR}"
+```
+
+## 4.1 Virulence and resistance (VFDB and ResFinder - ABRIcate)
+```{bash VFDB_ResFinder, eval=TRUE}
+# 1) Definições de paths e parâmetros
+# (o RStudio já definiu o working dir como /home/.../Genomas_enterobacter_2023)
+RESIST_DIR="resistance_virulence"          # será criado abaixo, dentro do projeto
+ASM_SPADES_DIR="assemblies/spades"         # pasta onde estão as montagens SPAdes
+THREADS=8
+
+# 2) Cria diretório de saída dentro do projeto
+mkdir -p "${RESIST_DIR}"
+
+# 3) Coleta lista de amostras (nomes de subpastas em assemblies/spades)
+readarray -t samples < <(
+  ls "${ASM_SPADES_DIR}"/*/contigs.fasta 2>/dev/null | \
+    xargs -n1 dirname | \
+    xargs -n1 basename
+)
+if [ ${#samples[@]} -eq 0 ]; then
+  echo "⚠️  Nenhuma montagem encontrada em ${ASM_SPADES_DIR}" >&2
+  exit 1
+fi
+echo "Amostras para detecção Abricate: ${samples[*]}"
+
+# 4) Loop de execução do Abricate para ResFinder e VFDB
+for s in "${samples[@]}"; do
+  FASTA="${ASM_SPADES_DIR}/${s}/contigs.fasta"
+  
+  echo "→ ${s}: ResFinder"
+  conda run -n genomics abricate \
+    --db resfinder \
+    --mincov 90 \
+    --minid 90 \
+    --threads ${THREADS} \
+    "${FASTA}" \
+  > "${RESIST_DIR}/${s}_resfinder.tab"
+
+  echo "→ ${s}: VFDB"
+  conda run -n genomics abricate \
+    --db vfdb \
+    --mincov 90 \
+    --minid 90 \
+    --threads ${THREADS} \
+    "${FASTA}" \
+  > "${RESIST_DIR}/${s}_vfdb.tab"
+done
+
+# 5) Construção dos sumários consolidados
+echo "→ Gerando sumário ResFinder"
+conda run -n genomics abricate --summary "${RESIST_DIR}"/*_resfinder.tab \
+  > "${RESIST_DIR}/resfinder_summary.tsv"
+
+echo "→ Gerando sumário VFDB"
+conda run -n genomics abricate --summary "${RESIST_DIR}"/*_vfdb.tab \
+  > "${RESIST_DIR}/vfdb_summary.tsv"
+
+# 6) Finalização
+echo "✅ Resistência e Virulência gerados em ${RESIST_DIR}"
+```
+
+### 4.1.1  Virulence and resistance plots
+```{r VFDB_ResFinder, eval=F, echo=FALSE}
+# ---- Bibliotecas ----
+library(tidyverse)   # readr, dplyr, tidyr, ggplot2
+library(openxlsx)    # write.xlsx
+library(pheatmap)    # heatmap fácil
+
+# ---- Paths ----
+path          <- '/home/local.hcpa.ufrgs.br/olovison/Scripts_workflows/Genomics_workflow/Genomas_enterobacter_2023'
+resist_dir    <- file.path(path, "resistance_virulence")
+tables_dir    <- file.path(path, "tables")
+figs_dir      <- file.path(path, "figures")
+
+dir.create(tables_dir, recursive=TRUE, showWarnings=FALSE)
+dir.create(figs_dir,   recursive=TRUE, showWarnings=FALSE)
+
+# ---- Função de exportação ----
+export_table <- function(df, name) {
+  write_csv(df, file.path(tables_dir, paste0(name, ".csv")))
+  write_tsv(df, file.path(tables_dir, paste0(name, ".tsv")))
+  write.xlsx(df, file.path(tables_dir, paste0(name, ".xlsx")), rowNames = FALSE)
+}
+
+# ---- Leitura dos sumários ----
+resf_sum  <- read_tsv(file.path(resist_dir, "resfinder_summary.tsv"), show_col_types = FALSE)
+vfdb_sum  <- read_tsv(file.path(resist_dir, "vfdb_summary.tsv"),      show_col_types = FALSE)
+
+# ---- Exporta tabelas brutas consolidadas ----
+export_table(resf_sum, "resfinder_summary")
+export_table(vfdb_sum, "vfdb_summary")
+
+# ---- Prepara matriz presença/ausência ----
+# Assume colunas: #FILE, GENE, COVERAGE, IDENTITY, etc.
+# Pivot para genes vs amostras, marcando presença se COVERAGE>0 ou se GENE aparece
+make_pa_matrix <- function(df) {
+  df %>%
+    select(file = 1, gene) %>%             # ajusta nomes conforme seu summary
+    mutate(present = 1) %>%
+    distinct() %>%
+    pivot_wider(names_from = file, values_from = present, values_fill = 0) %>%
+    column_to_rownames("gene")
+}
+
+resf_pa <- make_pa_matrix(resf_sum)
+vfdb_pa <- make_pa_matrix(vfdb_sum)
+
+# ---- Heatmap ResFinder ----
+pheatmap(
+  mat            = resf_pa,
+  cluster_rows   = TRUE,
+  cluster_cols   = TRUE,
+  show_rownames  = FALSE,
+  fontsize_col   = 10,
+  main           = "Presença/Ausência: Genes de Resistência (ResFinder)"
+)
+ggsave(
+  file.path(figs_dir, "heatmap_resfinder_presence.pdf"),
+  width  = 180, height = 200, units = "mm", dpi = 300
+)
+ggsave(
+  file.path(figs_dir, "heatmap_resfinder_presence.png"),
+  width  = 180, height = 200, units = "mm", dpi = 300
+)
+
+# ---- Heatmap VFDB ----
+pheatmap(
+  mat            = vfdb_pa,
+  cluster_rows   = TRUE,
+  cluster_cols   = TRUE,
+  show_rownames  = FALSE,
+  fontsize_col   = 10,
+  main           = "Presença/Ausência: Fatores de Virulência (VFDB)"
+)
+ggsave(
+  file.path(figs_dir, "heatmap_vfdb_presence.pdf"),
+  width  = 180, height = 200, units = "mm", dpi = 300
+)
+ggsave(
+  file.path(figs_dir, "heatmap_vfdb_presence.png"),
+  width  = 180, height = 200, units = "mm", dpi = 300
+)
+```
+
+## 4.2 MLST/cgMLST
+```{bash MLST_cgMLST, eval=F, echo=FALSE}
+# ------------------------------------------------------------------------------
+# 4.1 MLST clássico com mlst
+# ------------------------------------------------------------------------------
+#Como funciona
+#docker run --rm: executa e remove o container após o uso.
+#-v "...:/data": monta a pasta local da amostra em /data no container.
+#staphb/mlst mlst /data/contigs.fasta: chama o comando mlst dentro do container.
+#A saída é redirecionada para MLST/<sample>_mlst.txt.
+MLST_DIR="${path}/MLST"
+mkdir -p "${MLST_DIR}"
+
+for s in ${samples[@]}; do
+  contig="${asm_spades_dir}/${s}/contigs.fasta"
+  
+  # roda o mlst dentro do container staphb/mlst
+  docker run --rm \
+    -v "${asm_spades_dir}/${s}:/data" \
+    staphb/mlst \
+    mlst /data/contigs.fasta \
+  > "${MLST_DIR}/${s}_mlst.txt"
+done
+
+# ------------------------------------------------------------------------------
+# 4.2 cgMLST com chewBBACA
+# ------------------------------------------------------------------------------
+# Parâmetros principais:
+#   -i: pasta com FASTA de cada genoma
+#   --schema: diretório do esquema cgMLST
+#   --output: pasta de resultados
+#   --ptdb: pasta do esquema (genes e perfis)
+# Ajuste este caminho para onde está seu esquema cgMLST (genes FASTA por locus)
+SCHEMA_DIR="${path}/cgmlst_schema"
+
+# Cria um diretório de trabalho para cada amostra, copiando o FASTA
+for s in ${samples[@]}; do
+  work="${MLST_DIR}/${s}_cgmlst"
+  mkdir -p "$work"
+  cp "${asm_spades_dir}/${s}/contigs.fasta" "$work/${s}.fasta"
+done
+
+# Executa allele calling em batch
+#   -i: lista de pastas com FASTA de cada isolado
+#   -g: pasta com arquivos FASTA de cada gene do esquema (genes/ no cgmlst_schema)
+#   -o: diretório de resultados
+#   --cpu: número de threads
+chewBBACA.py AlleleCall \
+  -i "${MLST_DIR}"/*_cgmlst \
+  -g "${SCHEMA_DIR}/genes" \
+  -o "${MLST_DIR}/cgmlst_results" \
+  --cpu ${threads}
+
+# Saídas principais em:
+#   ${MLST_DIR}/cgmlst_results/results_alleles/    -> alelos por locus e amostra
+#   ${MLST_DIR}/cgmlst_results/cgmlst_profile.tsv  -> tabela com perfil allelístico
+```
+
+# 5.0 Pangenome (Panaroo)
+```{bash pangenome_panaroo, eval=F, echo=FALSE}
+#O pangenoma abrange o conjunto total de genes presentes em um grupo de cepas de uma espécie, compreendendo o genoma core (genes presentes em todos os isolados) e o genoma acessório (genes presentes apenas em subset de isolados, incluindo genes únicos). Essa análise ajuda a entender variabilidade genética, distribuição de genes de resistência/virulência, e relação entre cepas.
+# ------------------------------------------------------------------------------
+# 6. Análise de Pangenoma com Panaroo
+# ------------------------------------------------------------------------------
+
+# Diretório de trabalho
+PAN_DIR="${path}/pangenome"
+OUT_DIR="${PAN_DIR}/panaroo_out"
+mkdir -p "${PAN_DIR}" "${OUT_DIR}"
+
+# 1) Copia todos os GFF3 do PGAP
+for s in ${samples[@]}; do
+  cp "${annot_dir}/${s}/output/"*.gff "${PAN_DIR}/${s}.gff"
+done
+
+# 2) Executa o Panaroo
+panaroo \
+  -i "${PAN_DIR}"/*.gff \        # entradas: todos os GFFs
+  -o "${OUT_DIR}" \              # saída: pasta panaroo_out
+  -t ${threads} \                # threads
+  --clean-mode strict \          # modo estrito de limpeza de artefatos
+  --remove-invalid-genes         # descarta genes mal formatados
+
+
+
+rm(list = ls(all = TRUE))
+```
+
+## 5.1 Pangenome plots
+```{r pangenome_panaroo, eval=F, echo=FALSE}
+# ---- Bibliotecas ----
+library(tidyverse)    # readr, dplyr, ggplot2, tidyr
+library(openxlsx)     # write.xlsx
+library(UpSetR)       # plot de interseção de conjuntos
+library(ggpubr)       # para múltiplos plots
+
+# ---- Paths ----
+path        <- '/home/local.hcpa.ufrgs.br/olovison/Scripts_workflows/Genomics_workflow/Genomas_enterobacter_2023'
+pan_dir     <- file.path(path, "pangenome", "panaroo_out")
+tables_dir  <- file.path(path, "tables")
+figs_dir    <- file.path(path, "figures")
+
+dir.create(tables_dir, recursive=TRUE, showWarnings=FALSE)
+dir.create(figs_dir,   recursive=TRUE, showWarnings=FALSE)
+
+# ---- Função de exportação ----
+export_table <- function(df, name) {
+  write_csv(df, file.path(tables_dir, paste0(name, ".csv")))
+  write_tsv(df, file.path(tables_dir, paste0(name, ".tsv")))
+  write.xlsx(df, file.path(tables_dir, paste0(name, ".xlsx")), rowNames = FALSE)
+}
+
+# ---- 1) Importa summary_statistics.txt ----
+# Arquivo com estatísticas de pangenoma, formato:
+#   Stat\tValue
+stats <- read_tsv(file.path(pan_dir, "summary_statistics.txt"),
+                  col_names = c("Stat","Value"), comment = "#")
+export_table(stats, "pangenome_summary_statistics")
+
+# ---- 2) Importa gene_presence_absence.csv ----
+gpa <- read_csv(file.path(pan_dir, "gene_presence_absence.csv"))
+# Exporta a tabela bruta
+export_table(gpa, "gene_presence_absence")
+
+# ---- 3) Monta curva de pangenoma ----
+# A coluna 'No. genomes' e 'Total genes' aparecem no stats
+pan_curve <- stats %>%
+  filter(str_detect(Stat, "genomes|Total genes")) %>%
+  pivot_wider(names_from = Stat, values_from = Value) %>%
+  rename(num_genomes = `No. genomes`,
+         total_genes = `Total genes`) %>%
+  mutate(num_genomes = as.integer(num_genomes),
+         total_genes = as.integer(total_genes))
+
+p_curve <- ggplot(pan_curve, aes(x = num_genomes, y = total_genes)) +
+  geom_line() +
+  geom_point() +
+  labs(x = "Número de Genomas", y = "Tamanho do Pangenoma (genes)",
+       title = "Curva de Acumulação de Pangenoma") +
+  theme_minimal()
+
+# Salva curva
+ggsave(file.path(figs_dir, "pangenome_accumulation_curve.pdf"),
+       p_curve, width = 180, height = 120, units = "mm", dpi = 300)
+ggsave(file.path(figs_dir, "pangenome_accumulation_curve.png"),
+       p_curve, width = 180, height = 120, units = "mm", dpi = 300)
+
+# ---- 4) Matriz presença/ausência para UpSet ----
+# As colunas de samples começam após a coluna 'Gene' até o final
+pa_matrix <- gpa %>%
+  select(-c("No. isolates", "Annotation")) %>%  # remove colunas extras
+  column_to_rownames("Gene") %>%
+  mutate_all(~ ifelse(. == "", 0, 1))            # genes ausentes são strings vazias
+
+# UpSet requires a data frame of 0/1
+upset(pa_matrix, 
+      nsets = length(samples), 
+      order.by = "freq", 
+      mainbar.y.label = "Genes Compartilhados",
+      sets.x.label     = "Genes por Amostra")
+
+# Salva o plot (via grid)
+ggsave(file.path(figs_dir, "pangenome_upset.pdf"),
+       width = 180, height = 150, units = "mm", dpi = 300)
+ggsave(file.path(figs_dir, "pangenome_upset.png"),
+       width = 180, height = 150, units = "mm", dpi = 300)
+
+rm(list = ls(all = TRUE))
+```
+
+# 6.0 Phylogeny (Snippy)
+```{bash phylo_setup, eval=F, echo=FALSE}
+# ------------------------------------------------------------------------------
+# 7.0 Preparação do diretório de filogenia
+# ------------------------------------------------------------------------------
+PHYLO_DIR="${path}/phylogeny"
+REF_SAMPLE="${samples[0]}"                                  # escolha de referência: a primeira amostra
+REF_FASTA="${asm_unicycler_dir}/${REF_SAMPLE}/assembly.fasta"  # assembly completo do ref
+
+mkdir -p "${PHYLO_DIR}"
+cp "$REF_FASTA" "${PHYLO_DIR}/reference.fasta"
+```
+
+## 6.1 Snippy mapping
+```{bash snippy_mapping, eval=F, echo=FALSE}
+# ------------------------------------------------------------------------------
+# 7.1 Chamadas de SNP por Snippy (para cada amostra)
+# ------------------------------------------------------------------------------
+# Usa o container Snippy (v4.6.0)
+SNIPPY_IMG="quay.io/biocontainers/snippy:4.6.0--pl526h7a1dbc1_1"
+
+for s in ${samples[@]}; do
+  docker run --rm \
+    -v "${trim_dir}:/trim" \
+    -v "${PHYLO_DIR}:/phylo" \
+    ${SNIPPY_IMG} \
+    snippy \
+      --cpus ${threads} \
+      --outdir /phylo/${s} \
+      --ref /phylo/reference.fasta \
+      --R1 /trim/${s}_R1.paired.fastq.gz \
+      --R2 /trim/${s}_R2.paired.fastq.gz
+done
+```
+
+## 6.2 Snippy core
+```{bash snippy_core, eval=F, echo=FALSE}
+# ------------------------------------------------------------------------------
+# 7.2 Geração do alinhamento core (Snippy-core)
+# ------------------------------------------------------------------------------
+SNIPPY_IMG="quay.io/biocontainers/snippy:4.6.0--pl526h7a1dbc1_1"
+
+# monta a lista de pastas de saída do Snippy
+SAMPLE_DIRS=$(printf "/phylo/%s " ${samples[@]})
+
+docker run --rm \
+  -v "${PHYLO_DIR}:/phylo" \
+  ${SNIPPY_IMG} \
+  snippy-core \
+    --ref /phylo/reference.fasta \
+    --prefix core \
+    ${SAMPLE_DIRS}
+# Saída em /phylo/core.full.aln e core.tab
+```
+
+## 6.3 Tree inference (IQ-TREE)
+```{bash iqtree_build, eval=F, echo=FALSE}
+# ------------------------------------------------------------------------------
+# 7.3 Inferência de árvore com IQ-TREE
+# ------------------------------------------------------------------------------
+# Usa container IQ-TREE2
+IQTREE_IMG="quay.io/biocontainers/iqtree2:2.2.0--h10bd962_0"
+
+docker run --rm \
+  -v "${PHYLO_DIR}/core:/core" \
+  ${IQTREE_IMG} \
+  iqtree2 \
+    -s /core/core.full.aln \    # alignment de SNPs
+    -nt AUTO \                  # detecta núcleos disponíveis
+    -m GTR+G \                  # modelo de substituição GTR+G
+    --prefix /core/iqtree       # sai /core/iqtree.treefile, etc.
+```
+
+## 6.4 Phylogeny plot
+```{r phylo_plot, eval=F, echo=FALSE}
+# ------------------------------------------------------------------------------
+# 7.4 Visualização em R com ggtree e filogeografia
+# ------------------------------------------------------------------------------
+library(ape)       # read.tree
+library(ggtree)    # ggtree, geom_tiplab
+library(tidyverse) # read_csv
+
+phylo_dir <- file.path(path, "phylogeny", "core")
+treefile  <- file.path(phylo_dir, "iqtree.treefile")
+tree      <- read.tree(treefile)
+
+# Se você tiver um metadata.csv em `path` com colunas:
+# sample, ward, city, date (YYYY-MM-DD)
+meta <- read_csv(file.path(path, "metadata.csv"))
+
+# Combina metadata com a árvore
+p <- ggtree(tree) %<+% meta +
+     geom_tiplab(aes(color=ward), size=3) +
+     labs(title="Árvore de SNPs com Anotações de Filogeografia") +
+     theme(legend.position="right")
+
+# Salva figura
+ggsave(
+  file.path(figs_dir, "phylogeny_snp_tree.pdf"),
+  plot = p,
+  width = 180, height = 200,
+  units = "mm", dpi = 300
+)
+ggsave(
+  file.path(figs_dir, "phylogeny_snp_tree.png"),
+  plot = p,
+  width = 180, height = 200,
+  units = "mm", dpi = 300
+)
+```
+
+# Session info
+```{r session_info, eval=TRUE, echo=F}
+sessionInfo()
+```
