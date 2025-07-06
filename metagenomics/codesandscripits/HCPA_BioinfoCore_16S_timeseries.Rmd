@@ -1,5 +1,5 @@
 ---
-title: "Aqui vai o título (este workflow é para análises de série temporal)"
+title: "Adjunctive Taurine Therapy and Gut Microbiome Shifts in Adults with Type 2 Diabetes: A Randomized, Placebo-452led Trial"
 author: "Dr. Otávio von Ameln Lovison"
 date: "`r Sys.Date()`"
 output:
@@ -30,7 +30,7 @@ header-includes:
 ```{r setup, include = FALSE}
 # Este primeiro chunk deve ser executado sempre que qualquer análise for ser realizada.
 # Diretório de análise
-path <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Profa.Ines_hemicell_2025/Hemicell_results_final'
+path <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Tasso_et_al_2025/Analysis'
 knitr::opts_knit$set(root.dir = path)
 
 # Configurações globais de chunk
@@ -57,11 +57,12 @@ options(knitr.table.format = "latex")
 ```
 
 # 0 - Prep
-Aqui vai uma breve descrição do projeto. Exemplo abaixo:
+This investigation is a double-blind, randomized clinical trial assessing whether taurine supplementation alters the intestinal microbiota of adults with type 2 diabetes mellitus. It is embedded within a larger study (“Effect of taurine as an adjuvant to conventional diabetes therapy on glycemic, lipid, and inflammatory profiles”), and specifically targets gut microbial shifts induced by adjunctive taurine therapy.
 
-Data for this analysis is from the project 'Proteomics and Metagenomics for Identification and Characterization of COVID-19 Biomarkers', ethics approval 4.355.906, Hospital de Clínicas de Porto Alegre (HCPA). The bioinformatics analyses were performed in the Bioinformatics Core of HCPA. This document presents the microbiome analysis workflow for this project.
+Seventy-six stool samples are collected from 38 participants (17 in one arm, 21 in the other arm), each sampled at two timepoints (pre- and post-supplementation). Inclusion criteria require a clinical T2DM diagnosis ≥6 months, age 30–80 years, BMI ≥18.5 kg/m², stable antidiabetic regimen (≥3 months), no recent weight change, and HbA1c 7.5–10.5%. Key exclusions include recent use of herbal or antioxidant supplements, pregnancy/lactation, recent myocardial infarction, active neoplasia, chronic glucocorticoids, bariatric surgery, or insulin therapy . Randomization is stratified but concealed from participants and investigators.
 
-In this analysis we include 79 nasal and oropharynx swabs from HCPA biobank, collected to perform rt-qPCR for SARS-CoV-2 detection. The samples were selected using COVID-19 severity class (WHO, 2020), as follows: Group 1 (n = 22): positive rt-qPCR for SARS-CoV-2 - COVID-19 - moderate; Group 2 (n = 19, control group): negative rt-qPCR for SARS-CoV-2 (confirmed with a second test), previously classified as moderate COVID-19 by the physician; Group 3 (n = 20): positive rt-qPCR for SARS-CoV-2 - COVID-19 - severe/critical; Group 4 (n = 18, control group): asymptomatic, highly exposed inpatients and Controlcare workers, who tested negative by rt-qPCR for SARS-CoV-2 screening. 
+Fecal samples are self-collected in sterile containers and held at 4 °C for up to 24 h before delivery, then transported on ice to the Bioinformatics Core (UPL/CPE/HCPA) . Consistency is recorded via the Bristol Stool Scale; samples are homogenized, aliquoted (4 × Eppendorf tubes), and stored at –80°C for up to two years. Microbial DNA is extracted using the QIAamp Power Fecal Pro DNA Kit per manufacturer’s protocol, ensuring high-quality yields for sequencing. Libraries are prepared using Illumina’s Nextera XT Index Kit v2 (Set A), and sequencing is performed on a MiSeq with the Reagent Kit v2 (Illumina). Targeted 16S rRNA amplification focuses on hypervariable regions V3–V4 (primers 341F/515R) and, in parallel, V3–V5 (primers 357F/926R), enabling comprehensive community profiling.
+
 
 ```{r download_main_data, eval=FALSE, echo=FALSE}
 ##Link for the repository containing the phyloseq object for all subsequent analyses.
@@ -71,149 +72,342 @@ In this analysis we include 79 nasal and oropharynx swabs from HCPA biobank, col
 rm(list = ls(all = TRUE))
 ```
 
-# 0.0 Libraries
-```{r libraries, eval=TRUE, echo=T}
-library(gtsummary)
-library(writexl)
-library(dplyr)
-library(phyloseq)
-library(nlme)
-library(vegan)
-library(compositions)
-library(ggplot2)
-library(lme4)
-library(reshape2) 
-library(vegan)
-library(ade4)
-library(plotly)
-library(pracma) 
-library(fpc) 
-library(tidyverse)
-library(cluster)
-library(RColorBrewer)
-library(ape)
-library(gplots)
-library(RColorBrewer)
-library(pheatmap)
-library(Maaslin2)
-library(ggpicrust2)
-library(microbiome)
-library(file2meco)
-library(microbiomeutilities)
-library(gridExtra)
-library(GGally)
-library(broom)
-library(broom.mixed)
-library(kableExtra)
-library(emmeans)
-```
-
 # 0.1 Descriptive data
 ```{r desc_data, eval=TRUE, echo=FALSE}
+#Se a tabela no final 'estourar' valores, verifique a fatorização e, se necessario, refaça após o exclude_vars
+# Libraries
+library(phyloseq)
+library(microbiome)
+library(dplyr)
+library(magrittr)
+library(stringr)
+library(lubridate)
+library(gtsummary)
+library(tibble)
+library(writexl)
+library(kableExtra)
+
 # 1) Diretório
-path     <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Profa.Ines_hemicell_2025/Hemicell_results_final'
-overview <- file.path(path, "overview")
+path     <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Tasso_et_al_2025/Analysis'
+overview <- file.path(path, 'overview')
 dir.create(overview, showWarnings = FALSE, recursive = TRUE)
 
-# 2) Carrega o phyloseq
-ps0 <- readRDS("ps.dna.rds")
+# 2) Carrega o phyloseq original
+ps0 <- readRDS('ps.dna.rds')
 
-# 2.1 Renomeando o rownames do sample data e da table
-samdf <- sample_data(ps0)
-otu_table <- otu_table(ps0)
-rownames(samdf) <- samdf$sample
-rownames(otu_table) <- samdf$sample 
-
-# 2.2 Remontando o objeto ps0
-ps0 <- phyloseq(tax_table(ps0),
-                sample_data(samdf),
-                otu_table(otu_table, taxa_are_rows = FALSE))
-
-# 3) Padroniza e relevel o fator Group
-sample_data(ps0)$Group <- as.character(sample_data(ps0)$Group)
-sample_data(ps0)$Group <- gsub("ꞵ-mannanase", "Beta-mannanase",
-                               sample_data(ps0)$Group)
-# Ajusta “Control” com C maiúsculo (caso venha como “control” ou “CONTROL”)
-sample_data(ps0)$Group <- toupper(substr(sample_data(ps0)$Group, 1,1)) %>%
-  paste0(tolower(substr(sample_data(ps0)$Group, 2, nchar(sample_data(ps0)$Group))))
-# Agora ja é “Control” e “Beta-mannanase”
-sample_data(ps0)$Group <- factor(
-  sample_data(ps0)$Group,
-  levels = c("Control", "Beta-mannanase")
-)
-
-# 4) Ajustes adicionais em ps0
-sample_data(ps0)$Animal <- sprintf("A%03d",
-                                   as.numeric(gsub("A", "",
-                                                   sample_data(ps0)$Animal)))
-sample_data(ps0)$Timepoint <- factor(
-  sample_data(ps0)$Age,
-  levels = c(20, 25, 103),
-  labels = c("D20", "D25", "D103")
-)
-
-# 5) Extrai e salva metadados ajustados
+# 2.1) Extrai metadados e tabela
 samdf <- microbiome::meta(ps0)
-saveRDS(samdf, file.path(overview, "adjusted_metadata.rds"))
-saveRDS(ps0,  "ps0.rds")
+otu_tab <- as.data.frame(otu_table(ps0))
 
-# 6) Cria a tabela
-summary_table <- samdf %>%
-  select(Group, Timepoint) %>%
-  tbl_summary(
-    by        = Timepoint,
-    missing   = "no",
-    statistic = all_categorical() ~ "{n}/{N} ({p}%)",
-    label     = list(Group ~ "Group")
+# 2.2) Transformando group em factor
+samdf$Group <- as.factor(samdf$Group)
+
+# 2.3) Define Timepoint pela primeira letra do SampleID
+samdf <- samdf %>%
+  mutate(
+    Timepoint = case_when(
+      grepl("^A", SampleID) ~ "Timepoint1",
+      grepl("^B", SampleID) ~ "Timepoint2",
+      TRUE                  ~ NA_character_
+    ),
+    Timepoint = factor(Timepoint, levels = c("Timepoint1","Timepoint2"))
+  )
+
+# 2.4) Calcula Days_since_start por PatientID
+samdf <- samdf %>%
+  mutate(Collection_date = dmy(Collection_date)) %>%
+  group_by(PatientID) %>%
+  arrange(Collection_date, .by_group = TRUE) %>%
+  mutate(
+    Days_since_start = as.numeric(Collection_date - min(Collection_date, na.rm = TRUE))
   ) %>%
-  add_p(test = all_categorical() ~ "fisher.test") %>%
+  ungroup()
+
+# 2.5) Cria Season (hemisfério sul)
+samdf <- samdf %>%
+  mutate(
+    month = month(Collection_date),
+    Season = case_when(
+      month %in% c(12,1,2)   ~ "Summer",
+      month %in% c(3,4,5)    ~ "Autumn",
+      month %in% c(6,7,8)    ~ "Winter",
+      month %in% c(9,10,11)  ~ "Spring",
+      TRUE                   ~ NA_character_
+    ),
+    Season = factor(Season, levels = c("Summer","Autumn","Winter","Spring"))
+  ) %>%
+  select(-month)
+
+# 2.6) Ajustando HbA1C
+# 1–4) Clean and convert the HbA1c column in samdf
+samdf <- samdf %>%
+  # 1) Rename column
+  rename(HbA1C = HbA1c) %>%
+  # 2) Remove '%' and 3) replace comma with dot, then 4) convert to numeric
+  mutate(
+    HbA1C = str_remove_all(HbA1C, "%"),
+    HbA1C = str_replace(HbA1C, ",", "."),
+    HbA1C = as.numeric(HbA1C)
+  )
+
+# 2.7) Substitui vírgulas por pontos e converte para numérico
+samdf <- samdf %>%
+  mutate(
+    `Body_weight` = as.numeric(str_replace_all(`Body_weight`, ",", ".")),
+    BMI           = as.numeric(str_replace_all(BMI,           ",", "."))
+  )
+
+# 3) Salvar metadados ajustados
+saveRDS(samdf, file.path(overview, 'adjusted_metadata.rds'))
+write_xlsx(samdf, file.path(overview, 'adjusted_metadata.xlsx'))
+
+# 3.1) Reconstrói ps0 com o metadata limpo
+samdf <- as.data.frame(samdf)
+
+# 2) pega a ordem dos SampleIDs na OTU table
+sample_ids <- sample_names(ps0)  # ou rownames(otu_tab) se taxa_are_rows=FALSE
+
+# 3) reordena TODO o samdf para casar com essa ordem
+samdf <- samdf[ match(sample_ids, samdf$SampleID), ]
+
+# 4) define os rownames de samdf como SampleID
+rownames(samdf) <- samdf$SampleID
+
+# 5) reconstrói o phyloseq com o tax_table original, os metadados reordenados e a otu_table
+ps0 <- phyloseq(
+  tax_table(ps0),
+  sample_data(samdf),
+  otu_table(otu_tab, taxa_are_rows = FALSE))
+
+saveRDS(ps0, file.path(path, 'ps0.rds'))
+
+# 3.2) Filtra somente Timepoint1 para a tabela
+samdf <- samdf %>%
+  filter(Timepoint == "Timepoint1")
+
+# 4) Gera summary apenas com Timepoint1, estratificado por Group
+summary_table <- tbl_summary(
+  data     = samdf,
+  by       = Group,
+  include  = -c(PatientID, SampleID, Collection_date, Batch),
+  missing      = "no",
+  missing_text = "NA",
+  statistic = list(
+    all_continuous()  ~ "{mean} ± {sd}",
+    all_categorical() ~ "{n}/{N} ({p}%)"
+  ),
+  label = list(
+    HbA1C                                    ~ "HbA1C (%)",
+    Sex                                      ~ "Sex",
+    Age                                      ~ "Age (years)",
+    Race                                     ~ "Race",
+    Occupation                               ~ "Occupation",
+    Body_weight                              ~ "Body Weight (kg)",
+    BMI                                      ~ "Body Mass Index",
+    BMI_classification                       ~ "BMI Classification",
+    BMI_classification_.dichotomy.           ~ "BMI (dichotomous)",
+    Hip_circumference                        ~ "Hip Circumference (cm)",
+    Waist_circumference                      ~ "Waist Circumference (cm)",
+    Heart_rate                               ~ "Heart Rate (bpm)",
+    Systolic_blood_pressure                  ~ "Systolic BP (mmHg)",
+    Diastolic_blood_pressure                 ~ "Diastolic BP (mmHg)",
+    T2DM_diagnosis_time_.years.              ~ "T2DM Duration (years)",
+    Hypertension                             ~ "Hypertension",
+    Heart_disease                            ~ "Heart Disease",
+    Dyslipidemia                             ~ "Dyslipidemia",
+    Hypothyroidism                           ~ "Hypothyroidism",
+    Renal_calculus                           ~ "Renal Calculus",
+    Antidiabetics                            ~ "Antidiabetic Use",
+    Biguanide                                ~ "Biguanide",
+    Sulfonylureas                            ~ "Sulfonylureas",
+    Sodium_glucose_cotransporter_type2_inhibitors ~ "SGLT2 Inhibitors",
+    Glucagon.like.peptide.1                  ~ "GLP-1 Analogues",
+    Dipeptidyl_peptidase_4_inhibitors        ~ "DPP-4 Inhibitors",
+    Antihypertensives                        ~ "Antihypertensive Use",
+    Angiotensin_II_receptor_antagonists      ~ "ARB Use",
+    Calcium_channel_blockers                 ~ "Calcium Channel Blockers",
+    Angiotensin_converting_enzyme_inhibitors ~ "ACE Inhibitors",
+    Bet_adrenergic_.blockers                 ~ "β-Blockers",
+    Diuretics                                ~ "Diuretics",
+    Thiazide_diuretics                       ~ "Thiazide Diuretics",
+    Nonsteroidal_anti_inflammatory_drugs     ~ "NSAIDs",
+    Antiplatelet                             ~ "Antiplatelet Use",
+    Antiplatelet_agents                      ~ "Clopidogrel",
+    Hypercholesterolemia_treatment           ~ "Lipid-Lowering Rx",
+    Inhibitors_of_hydroxymethylglutaryl_coenzyme_A_reductase ~ "Statins",
+    Fibrates                                 ~ "Fibrates",
+    Thyroid_hormones                         ~ "Thyroid Hormones",
+    Antidepressants                          ~ "Antidepressant Use",
+    Serotoni_and_norepinephrine_reuptake_inhibitors ~ "SNRI Use",
+    norepinephrine_dopamine_reuptake_inhibitor      ~ "NDRI Use",
+    Selective_serotonin_reuptake_inhibitors ~ "SSRI Use",
+    Xanthine_oxidase_inhibitors              ~ "Xanthine Oxidase Inhibitors",
+    Typical_antipsychotics                   ~ "Typical Antipsychotics",
+    Anticonvulsants                          ~ "Anticonvulsant Use",
+    Anticonvulsants.1                        ~ "Anticonvulsant (VPA/GPN)",
+    Beta_2_agonist_bronchodilators           ~ "β2-Agonists",
+    Antibiotic_use_.in_the_past_6_months.    ~ "Antibiotic Use (6 mo)",
+    Daily_bowel_habits                       ~ "Daily Bowel Habits",
+    Weekly_bowel_habits                      ~ "Weekly Bowel Habits",
+    Bristol_stool_scale                      ~ "Bristol Stool Scale",
+    Smoking                                  ~ "Smoking Status",
+    Alcohol_consumption                      ~ "Alcohol Consumption",
+    Physical_activity                        ~ "Physical Activity",
+    Type_of_physical_activity                ~ "Type of Activity",
+    Gastrointestinal_diseases_treatment      ~ "GI Disease Tx",
+    Days_since_start                         ~ "Days Since First Sample",
+    Season                                   ~ "Season (Southern Hemisphere)"
+  )
+) %>%
+  add_p(
+    test = list(
+      all_categorical() ~ "fisher.test",
+      all_continuous()  ~ "t.test"
+    )
+  ) %>%
   modify_header(
     label          ~ "**Variable**",
-    all_stat_cols() ~ "**{level}**"              # aqui {level} vira D20, D25, D103
+    all_stat_cols() ~ "**{level}**"
   ) %>%
   modify_spanning_header(
-    all_stat_cols() ~ "**Timepoint (N={N})**"    # exibe N= em cada coluna
+    all_stat_cols() ~ "**Group (N={N})**"
   ) %>%
   bold_labels()
 
-# 7) Exporta Excel (se quiser)
-write_xlsx(
-  as_tibble(summary_table$table_body),
-  file.path(overview, "summary_statistics.xlsx")
-)
-
-# 8) “Plota” no RMarkdown em PDF via knitr + kableExtra
+# Impressão com NA nas células vazias
 print(
   summary_table %>%
     as_kable_extra(
       booktabs    = TRUE,
       linesep     = "",
-      caption     = "Descriptive Table by Timepoint"
+      caption     = "Descriptive Table: Timepoint1 Only",
+      na          = "NA"
     ) %>%
     kable_styling(
-      latex_options = c("hold_position", "scale_down")
+      latex_options = c("hold_position","scale_down")
     )
 )
 
-# Limpa ambiente
+# Clean up
 rm(list = ls(all = TRUE))
 ```
-
-We were able to identify loss to follow-up with substitution, resulting in one less sample at Day 20.
 \FloatBarrier
 
-# 0.2 Data preparation
-## 0.2.1 Data prep plot
+# 0.2 Features selection
+## 0.2.1 Correlation matrix
+To evaluate multicolinearity, let's calculate and plot the correlations.
+```{r corr_mat, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4}
+library(dplyr)
+library(ggcorrplot)
+library(caret)
+library(writexl)
+library(ggplot2)
+
+# 1) Diretório (já criado antes)
+path     <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Tasso_et_al_2025/Analysis'
+overview <- file.path(path, 'overview')
+
+# 2) Carrega o phyloseq ajustado
+ps0   <- readRDS("ps0.rds")
+
+# 2.1) Extrai metadados
+samdf <- microbiome::meta(ps0)
+
+# 3) Seleciona variáveis contínuas e remove zero‐variance
+num_df <- samdf %>% select(where(is.numeric))
+nzv    <- nearZeroVar(num_df)
+if(length(nzv) > 0) {
+  message("Removing near zero vars: ", 
+          paste(names(num_df)[nzv], collapse = ", "))
+  num_df <- num_df[ , -nzv]
+}
+
+# 4) Calcula matriz de correlação
+cor_mat <- cor(num_df, use = "pairwise.complete.obs")
+
+# 5) Exporta matriz de correlação para Excel
+write_xlsx(
+  as.data.frame(cor_mat) %>% tibble::rownames_to_column("Variable"),
+  file.path(overview, "correlation_matrix.xlsx")
+)
+
+# 6) Gera o heatmap
+p_corr <- ggcorrplot(
+  cor_mat,
+  hc.order    = FALSE,
+  lab         = TRUE,
+  lab_size    = 3,
+  outline.col = "white",
+  title       = "Correlation Heatmap (numeric vars)"
+) +
+  theme_minimal(base_size = 7) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+# 7) Salva figura em PDF e PNG
+ggsave(
+  filename = file.path(overview, "correlation_heatmap.pdf"),
+  plot     = p_corr,
+  device   = cairo_pdf,
+  width    = 8, height = 6
+)
+ggsave(
+  filename = file.path(overview, "correlation_heatmap.png"),
+  plot     = p_corr,
+  width    = 8, height = 6, dpi = 300
+)
+
+# (Opcional) também exibe no RMarkdown
+print(p_corr)
+```
+Since we have highly correlated features, we will remove Body weight, Waist Circumference, Hip Circumference and Weekly bowel habits.
+
+## 0.2.2 Removing highly correlated variables
+```{r rem_hi_corr_var, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4}
+library(dplyr)
+library(phyloseq)
+
+# 1) Remove as variáveis altamente correlacionadas do samdf
+samdf2 <- samdf %>%
+  select(-Weekly_bowel_habits,
+         -Waist_circumference,
+         -Hip_circumference,
+         -Body_weight)
+
+# 2) Reconstrói o objeto phyloseq com samdf2
+# Extrai as tabelas originais
+otu_tab_old <- otu_table(ps0)
+tax_tab     <- tax_table(ps0)
+
+# Prepara o novo sample_data
+samdf2_df <- as.data.frame(samdf2)
+rownames(samdf2_df) <- samdf2_df$SampleID
+sample_data_new <- sample_data(samdf2_df)
+
+# Monta o novo ps0
+ps0 <- phyloseq(
+  tax_tab,
+  sample_data_new,
+  otu_tab_old
+)
+
+# 3) (Opcional) Salva o novo phyloseq
+saveRDS(ps0, file.path(path, "ps0_filtered_vars.rds"))
+```
+
+## 0.3 Data preparation
+### 0.3.1 Data prep plot
 ```{r data_prep_plot, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4,  fig.cap='Prevalence vs. Total Abundance (ASVs) with filtering cutoff'}
 library(phyloseq)
 library(ggplot2)
 
 # 1) Carrega objeto e dados
-ps.dna <- readRDS("ps0.rds")
+ps.dna <- readRDS("ps0_filtered_vars.rds")
 ps0.dna <- subset_taxa(ps.dna,
                        !is.na(Phylum) &
                        !Phylum %in% c("", "uncharacterized", "NA"))
-prevalenceThreshold <- 0.1 * nsamples(ps0.dna)
+prevalenceThreshold <- 0.13 * nsamples(ps0.dna)
 
 # 2) Prevalence x Abundance
 prev_counts <- apply(otu_table(ps0.dna) > 0,
@@ -237,7 +431,7 @@ ggplot(prevdf_asv, aes(x = Prevalence, y = Abundance)) +
   theme_bw(base_size = 12)
 ```
 
-## 0.2.2 Data preparation table
+### 0.3.2 Data preparation
 ```{r data_prep_table, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
 library(phyloseq)
 library(dplyr)
@@ -252,7 +446,7 @@ ps0.filtered <- subset_taxa(ps0.dna,
                             !Phylum %in% c("", "uncharacterized", "NA"))
 
 # 2) Define thresholds
-prevalenceThreshold <- 0.1 * nsamples(ps0.filtered)                # 10% das amostras
+prevalenceThreshold <- 0.13 * nsamples(ps0.filtered)                
 totalReads          <- sum(taxa_sums(ps0.filtered))
 abundanceThreshold  <- 0.0001 * totalReads                           # 0.01% do total de reads
 
@@ -264,28 +458,28 @@ keepASV   <- taxa_sums(ps0.filtered) >= abundanceThreshold &
 ps1.dna   <- prune_taxa(keepASV, ps0.filtered)
 
 # 4) Filtra Genus
-ps0.genus      <- tax_glom(ps0.filtered, "Genus",  NArm = FALSE)
-keepGenus      <- taxa_sums(ps0.genus) >= abundanceThreshold &
-                  apply(otu_table(ps0.genus) > 0,
-                        ifelse(taxa_are_rows(ps0.genus), 1, 2),
-                        sum) >= prevalenceThreshold
+ ps0.genus      <- tax_glom(ps0.filtered, "Genus",  NArm = FALSE)
+ keepGenus      <- taxa_sums(ps0.genus) >= abundanceThreshold &
+                   apply(otu_table(ps0.genus) > 0,
+                         ifelse(taxa_are_rows(ps0.genus), 1, 2),
+                         sum) >= prevalenceThreshold
 ps1.dna.genus  <- prune_taxa(keepGenus, ps0.genus)
-
+ 
 # 5) Filtra Family
 ps0.family     <- tax_glom(ps0.filtered, "Family", NArm = FALSE)
 keepFamily     <- taxa_sums(ps0.family) >= abundanceThreshold &
-                  apply(otu_table(ps0.family) > 0,
-                        ifelse(taxa_are_rows(ps0.family), 1, 2),
-                        sum) >= prevalenceThreshold
+                   apply(otu_table(ps0.family) > 0,
+                         ifelse(taxa_are_rows(ps0.family), 1, 2),
+                         sum) >= prevalenceThreshold
 ps1.dna.family <- prune_taxa(keepFamily, ps0.family)
-
+ 
 # 6) Filtra Phylum
 ps0.phyla      <- tax_glom(ps0.filtered, "Phylum", NArm = FALSE)
 keepPhylum     <- taxa_sums(ps0.phyla) >= abundanceThreshold &
-                  apply(otu_table(ps0.phyla) > 0,
-                        ifelse(taxa_are_rows(ps0.phyla), 1, 2),
-                        sum) >= prevalenceThreshold
-ps1.dna.phy    <- prune_taxa(keepPhylum, ps0.phyla)
+                   apply(otu_table(ps0.phyla) > 0,
+                         ifelse(taxa_are_rows(ps0.phyla), 1, 2),
+                         sum) >= prevalenceThreshold
+ ps1.dna.phy    <- prune_taxa(keepPhylum, ps0.phyla)
 
 # 7) Salva objetos
 saveRDS(ps1.dna,        "ps1.dna.rds")
@@ -293,52 +487,99 @@ saveRDS(ps1.dna.genus,  "ps1.dna.genus.rds")
 saveRDS(ps1.dna.family, "ps1.dna.family.rds")
 saveRDS(ps1.dna.phy,    "ps1.dna.phy.rds")
 
-# 8) Monta e exibe tabela
+ # 8) Monta e exibe tabela
 counts <- tibble(
-  Level      = c("ASV", "Genus", "Family", "Phylum"),
-  Before     = c(ntaxa(ps0.filtered), ntaxa(ps0.genus),
-                 ntaxa(ps0.family),    ntaxa(ps0.phyla)),
-  After      = c(ntaxa(ps1.dna),      ntaxa(ps1.dna.genus),
-                 ntaxa(ps1.dna.family),ntaxa(ps1.dna.phy)),
-  `Prev Thres`  = round(prevalenceThreshold, 1),
-  `Abund Thres` = round(abundanceThreshold, 0)
-)
+   Level      = c("ASV", "Genus", "Family", "Phylum"),
+   Before     = c(ntaxa(ps0.filtered), ntaxa(ps0.genus),
+                  ntaxa(ps0.family),    ntaxa(ps0.phyla)),
+   After      = c(ntaxa(ps1.dna),      ntaxa(ps1.dna.genus),
+                  ntaxa(ps1.dna.family),ntaxa(ps1.dna.phy)),
+   `Prev Thres`  = round(prevalenceThreshold, 1),
+   `Abund Thres` = round(abundanceThreshold, 0)
+ )
 
 #counts
 
 counts %>%
-  kable(
-    caption = "Taxa before/after prevalence \\& abundance filtering",
-    digits  = 0,
-    booktabs= TRUE
-  ) %>%
-  kable_classic(full_width = FALSE, position = "center") %>%
-  column_spec(2:3, width = "1.5cm") %>%
-  column_spec(4:5, width = "1.2cm")
+   kable(
+     caption = "Taxa before/after prevalence \\& abundance filtering",
+     digits  = 0,
+     booktabs= TRUE
+   ) %>%
+   kable_classic(full_width = FALSE, position = "center") %>%
+   column_spec(2:3, width = "1.5cm") %>%
+   column_spec(4:5, width = "1.2cm")
 
 # 9) Limpa ambiente
 rm(list = ls(all = TRUE))
 ```
+We filtered out taxa lacking phylum-level annotations, applied a 13% prevalence filter, 0.01% abundance filter, and aggregated taxa at the phylum, family, and genus levels.
 
-We filtered out taxa lacking phylum-level annotations, applied a 10% prevalence filter, 0.01% abundance filter, and aggregated taxa at the phylum, family, and genus levels.
+## 0.4 Feature importance
+### 0.4.1 - Principal Variance Component Analysis (PVCA)
+```{r feat_imp_PVCA, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4}
+# PVCA: Principal Variance Component Analysis
+#O PVCA (Principal Variance Component Analysis) combina redução de dimensionalidade (via PCA) com análise de componentes de variância (via modelos mistos) para estimar, de forma quantitativa, “quanto” da variabilidade total dos seus dados de perfil microbiano é atribuível a cada metadado (batch, Group, Timepoint, Season, etc).
+#O PVCA foi desenvolvido para quantificar, de forma agregada, quanto da variabilidade total do seu perfil microbiano é explicada por cada fator (e pela variância residual). 
+#Use PVCA como primeiro passo: identifique quais fatores (e.g. Season, Group, Batch, Sex) têm maior “peso” na comunidade. Isso orienta quais variáveis de metadados você deve testar prioritariamente nos modelos. Em seguida, ajuste um modelo linear misto completo (incluindo esses fatores) e avalie:
 
-# 0.3 Autocorrelation
-Checking autocorrelation among samples from the same animal over time.
+#Importância individual por estimativa de coeficiente e p-valor.
+#Multicolinearidade (VIF), para não manter fatores que competem entre si.
+#Seleção automatizada (LASSO, seleção passo-a-passo ou técnicas de penalização) se tiver muitas covariáveis.
 
-Study Structure
-Timepoints: Three distinct timepoints.
-Animal: Not every animal has samples at all timepoints.
+library(phyloseq)
+library(microbiome)
+library(variancePartition)
+library(Biobase)
+library(dplyr)
+library(ggplot2)
 
-Modeling
-The ideal approach should account for:
-Within-animal correlations over time (include a random effect for “Animal”).
-Fixed effects for Timepoint and treatment group.
-A random effect for Animal to capture the repeated-measures structure.
-Fixed effects of Timepoint and Group to test how treatments differ over time.
+# 1) Carrega phyloseq ajustado
+ps   <- readRDS("ps1.dna.rds")
+meta  <- as(sample_data(ps), "data.frame")
+otu   <- as(otu_table(ps),   "matrix")
+if(taxa_are_rows(ps)) otu <- t(otu)
+
+# 2) Normaliza por CLR e prepara matriz de expressão
+otu_norm <- microbiome::transform(ps, "clr") %>%
+  otu_table() %>% as("matrix")
+expr     <- t(otu_norm)  # ExpressionSet expects samples × features
+
+# 3) Define a fórmula de efeitos aleatórios sem interações
+#    Aqui incluí SubjectID como aleatório e Batch e Season como aleatórios também,
+#    mas *sem* PatientID:Season
+formula <- ~ Group + Sex + Age + Race + BMI_classification + Hypertension +
+  Dyslipidemia + Hypothyroidism + Antibiotic_use_.in_the_past_6_months. +
+  Alcohol_consumption + Gastrointestinal_diseases_treatment +  Season
+
+# 4) Roda a modelagem
+vp <- fitExtractVarPartModel(expr, formula, meta)
+
+# 5) Plot das proporções de variância com eixo X rotacionado
+p_vp <- plotVarPart(vp) +
+  ggtitle("Variance partitioning (variancePartition)") +
+  theme_minimal(base_size = 10) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+# 6) Salva figuras
+ggsave("variancePartition_components.pdf", p_vp, path = "overview",
+       device = cairo_pdf, width = 7, height = 5)
+ggsave("variancePartition_components.png", p_vp, path = "overview",
+       dpi = 300, width = 7, height = 5)
+
+# Exibe no documento
+print(p_vp)
+
+# 9) Limpa ambiente
+rm(list = ls(all = TRUE))
+```
+We will not use 'Season' as a variable for modeling since it does not showed importance as a feature in this data.
+### 0.4.2 Autocorrelation
+Checking autocorrelation among samples from the same patient over time.
 ```{r autocorr, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.cap='Spaghetti plots of PC1, PC2 and Shannon index over Age by Group'}
 set.seed(123)
-
-# --- 1) Load libraries ---
 library(phyloseq)
 library(microbiome)
 library(compositions)
@@ -347,157 +588,117 @@ library(ggplot2)
 library(dplyr)
 library(tibble)
 library(broom)
-library(knitr)
 
-# --- 2) Directories ---
-path     <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Profa.Ines_hemicell_2025/Hemicell_results_final'
+path     <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Tasso_et_al_2025/Analysis'
 autocorr <- file.path(path, "autocorrelation")
 dir.create(autocorr, showWarnings = FALSE, recursive = TRUE)
 
-# --- 3) Import phyloseq object and build metadata ---
-ps     <- readRDS("ps1.dna.rds")
+ps   <- readRDS("ps1.dna.rds")
+
+# 1) Monta meta_df sem duplicar SampleID
 meta_df <- sample_data(ps) %>%
   as("data.frame") %>%
+  # se já existir coluna SampleID, remove antes:
+  { if("SampleID" %in% colnames(.)) select(., -SampleID) else . } %>%
   rownames_to_column("SampleID") %>%
   mutate(
-    Age    = as.numeric(Age),
+    Days   = as.numeric(Days_since_start),
     Group  = factor(Group),
-    Animal = factor(Animal)
+    PatientID = factor(PatientID)
   )
 
-# --- 4) Build abundance matrix with samples as rows ---
-abun_mat <- as.matrix(otu_table(ps))
-if (taxa_are_rows(ps)) abun_mat <- t(abun_mat)
-
-# (optional) add small pseudocount to zeros for ILR
-abun_mat[abun_mat == 0] <- 0.5
-
-# --- 5) ILR transformation + PCA ---
-ilr_mat <- compositions::ilr(abun_mat)
-rownames(ilr_mat) <- rownames(abun_mat)
-
-pca_res <- prcomp(ilr_mat, center = FALSE, scale. = FALSE)
+# 2) ILR + PCA
+abun <- as.matrix(otu_table(ps))
+if(taxa_are_rows(ps)) abun <- t(abun)
+abun[abun==0] <- 0.5
+ilr_mat <- compositions::ilr(abun)
+pca_res <- prcomp(ilr_mat, center=FALSE, scale.=FALSE)
 var_pct <- pca_res$sdev^2 / sum(pca_res$sdev^2)
 
-# --- 6) Extract scores and join metadata ---
-pca_scores <- pca_res$x[,1:2] %>%
+scores_df <- pca_res$x[,1:2] %>%
   as.data.frame() %>%
   rownames_to_column("SampleID") %>%
-  rename(PC1 = 2, PC2 = 3)
+  rename(PC1 = 2, PC2 = 3) %>%
+  left_join(meta_df, by = "SampleID")
 
-pca_df <- left_join(pca_scores, meta_df, by = "SampleID")
+# 3) Spaghetti plots vs Days
+for(PC in c("PC1","PC2")){
+  p <- ggplot(scores_df, aes_string(x="Days", y=PC, group="PatientID", color="Group")) +
+    geom_line(alpha=0.5) + geom_point(size=2) +
+    labs(
+      x="Days since first sample",
+      y=sprintf("%s (%.1f%%)", PC, var_pct[as.integer(substr(PC,3,3))]*100),
+      title=sprintf("%s over time", PC)
+    ) +
+    theme_bw(base_size=12)
+  ggsave(file.path(autocorr, paste0(PC, "_spaghetti.pdf")), p,
+         width=6, height=4, dpi=300)
+  print(p)
+}
 
-# --- 7) Spaghetti plots ---
-# PC1 vs Age
-p1 <- ggplot(pca_df, aes(x = Age, y = PC1, group = Animal, color = Group)) +
-  geom_line(alpha = 0.5) +
-  geom_point(size = 2) +
-  labs(
-    x = "Age (days)",
-    y = paste0("PC1 (", round(var_pct[1]*100,2), "%)"),
-    title = "PC1 dynamics over Age"
-  ) +
-  theme_bw(base_size = 12)
-ggsave(file.path(autocorr, "pc1_spaghetti.pdf"), p1,
-       width = 6, height = 4, units = "in", dpi = 300)
+# Shannon
+shannon_df <- meta_df %>%
+  bind_cols(estimate_richness(ps, measures="Shannon") %>% rownames_to_column("SampleID")) %>%
+  rename(Shannon = Shannon)
 
-p1
+p_sh <- ggplot(shannon_df, aes(x=Days, y=Shannon, group=PatientID, color=Group)) +
+  geom_line(alpha=0.5) + geom_point(size=2) +
+  labs(x="Days since first sample", y="Shannon index", title="Shannon over time") +
+  theme_bw(base_size=12)
+ggsave(file.path(autocorr, "Shannon_spaghetti.pdf"), p_sh,
+       width=6, height=4, dpi=300)
+print(p_sh)
 
-# PC2 vs Age
-p2 <- ggplot(pca_df, aes(x = Age, y = PC2, group = Animal, color = Group)) +
-  geom_line(alpha = 0.5) +
-  geom_point(size = 2) +
-  labs(
-    x = "Age (days)",
-    y = paste0("PC2 (", round(var_pct[2]*100,2), "%)"),
-    title = "PC2 dynamics over Age"
-  ) +
-  theme_bw(base_size = 12)
-ggsave(file.path(autocorr, "pc2_spaghetti.pdf"), p2,
-       width = 6, height = 4, units = "in", dpi = 300)
+# 4) AIC AR(1) vs none
+diag_df <- bind_rows(
+  lapply(c("PC1","PC2"), function(PC) {
+    df <- filter(scores_df, !is.na(.data[[PC]]))
+    m0 <- lme(as.formula(paste(PC, "~ Days*Group")),
+              random=~1|PatientID, data=df, method="REML")
+    m1 <- update(m0, correlation=corCAR1(form=~Days|PatientID))
+    tibble(
+      feature      = PC,
+      AIC_noAR1    = AIC(m0),
+      AIC_withAR1  = AIC(m1),
+      deltaAIC     = AIC(m0) - AIC(m1)
+    )
+  }),
+  {
+    df <- filter(shannon_df, !is.na(Shannon))
+    m0 <- lme(Shannon ~ Days*Group, random=~1|PatientID,
+              data=df, method="REML")
+    m1 <- update(m0, correlation=corCAR1(form=~Days|PatientID))
+    tibble(
+      feature      = "Shannon",
+      AIC_noAR1    = AIC(m0),
+      AIC_withAR1  = AIC(m1),
+      deltaAIC     = AIC(m0) - AIC(m1)
+    )
+  }
+)
 
-p2
+p_aic <- ggplot(diag_df, aes(x=reorder(feature, deltaAIC), y=deltaAIC)) +
+  geom_col(fill="steelblue") + coord_flip() +
+  labs(x="Feature", y=expression(Delta~AIC),
+       title="ΔAIC: AR(1) vs none") +
+  theme_minimal(base_size=10)
+ggsave(file.path(autocorr, "deltaAIC_ar1_vs_none.pdf"), p_aic,
+       width=5, height=3, dpi=300)
+print(p_aic)
 
-# Shannon vs Age
-adiv_df <- sample_data(ps) %>%
-  as("data.frame") %>%
-  rownames_to_column("SampleID") %>%
-  mutate(
-    Age    = as.numeric(Age),
-    Group  = factor(Group),
-    Animal = factor(Animal)
-  ) %>%
-  bind_cols(estimate_richness(ps, measures = "Shannon"))
+#diag_df
 
-p3 <- ggplot(adiv_df, aes(x = Age, y = Shannon, group = Animal, color = Group)) +
-  geom_line(alpha = 0.5) +
-  geom_point(size = 2) +
-  labs(
-    x = "Age (days)",
-    y = "Shannon index",
-    title = "Shannon index dynamics over Age"
-  ) +
-  theme_bw(base_size = 12)
-ggsave(file.path(autocorr, "shannon_spaghetti.pdf"), p3,
-       width = 6, height = 4, units = "in", dpi = 300)
+knitr::kable(diag_df, digits=1,
+             caption="AIC comparison: correlation vs no‐correlation")
 
-p3
-
-# --- 8) Mixed‐effects models ---
-# filter out any NA
-pca_df2  <- filter(pca_df, !is.na(Age) & !is.na(Group) & !is.na(PC1))
-adiv_df2 <- filter(adiv_df, !is.na(Age) & !is.na(Group) & !is.na(Shannon))
-
-model_PC1     <- lme(PC1 ~ Age * Group,
-                     random      = ~1 | Animal,
-                     correlation = corCAR1(form = ~Age | Animal),
-                     data        = pca_df2,
-                     method      = "REML")
-model_PC2     <- update(model_PC1, PC2 ~ Age * Group, data = pca_df2)
-model_shannon <- lme(Shannon ~ Age * Group,
-                     random      = ~1 | Animal,
-                     correlation = corCAR1(form = ~Age | Animal),
-                     data        = adiv_df2,
-                     method      = "REML")
-
-#model_PC1
-#model_PC2
-#model_shannon
-
-# --- 9) Tidy tables for report ---
-cat("### Model for PC1\n")
-kable(broom::tidy(model_PC1), digits = 3)
-cat("\n### Model for PC2\n")
-kable(broom::tidy(model_PC2), digits = 3)
-cat("\n### Model for Shannon\n")
-kable(broom::tidy(model_shannon), digits = 3)
-
-# clean environment
-rm(list = ls(all = TRUE))
+# --- 5) Clean up -----------------------------------------------------------
+rm(list = ls())
 ```
-Here we are evaluating only the autocorrelation structures. The definitive statistical analyses of alpha and beta diversity will be conducted in subsequent chapters.
-
-Model for PC1
-A linear mixed‐effects model (REML) was fitted to PC1 with fixed effects for Age, Group (Control vs. reference), and their interaction, plus a random intercept for each Animal and a continuous AR(1) autocorrelation in Age.
-
-Random effects show between‐animal variability (σ≈4.63) and residual variability (σ≈5.55). The AR(1) parameter φ≈0.958 indicates strong autocorrelation of PC1 within animals over time. 
-
-Model for PC2
-The same structure for PC2 yields:
-
-Random‐effect SD for Animal is ~8.87, residual SD ~6.45, and φ≈0.929 for AR(1). 
-
-Model for Shannon index
-Fitted similarly on the Shannon diversity:
-
-Between‐animal SD is ~0.162, residual SD ~0.337, and φ≈0.915 indicates substantial within‐animal autocorrelation. 
-
-Total of 41 observations across 17 animals.
-
+The models with autocorrelation structure performed worse (deltaAIC negative) and the autocorrelation structure will not be used. This may happen when you have few and distant timepoints.  
 \FloatBarrier
 
-# 0.4 Checking outliers
-## 0.4.1 Outliers by sample size and composition
+# 0.5 Checking outliers
+## 0.5.1 Outliers by sample size and composition
 ```{r outliers_size_comp, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE,fig.align='center', fig.width=6, fig.height=4}
 # Load libraries
 library(broom)
@@ -508,7 +709,7 @@ library(forcats)
 library(phyloseq)
 
 # 1) Output directory
-path         <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Profa.Ines_hemicell_2025/Hemicell_results_final'
+path         <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Tasso_et_al_2025/Analysis'
 overview_dir <- file.path(path, 'overview')
 dir.create(overview_dir, showWarnings = FALSE, recursive = TRUE)
 
@@ -523,8 +724,8 @@ meta <- data.frame(sample_data(ps_ASV)) %>%
   mutate(
     Sample      = sample_names(ps_ASV),
     Depth       = sample_sums(ps_ASV),
-    Group = factor(Group, levels = c('Control','Beta-mannanase')),
-    Timepoint = factor(paste0("D", Age), levels = c("D20","D25","D103"))
+    Group = factor(Group, levels = c('452','151')),
+    Timepoint = factor(Timepoint, levels = c("Timepoint1","Timepoint2"))
   )
 
 # 4) ANOVA two‑way e tabela tidy
@@ -543,8 +744,8 @@ anova_tbl %>%
 # 6) Boxplot de profundidade por Group e Timepoint
 p0 <- ggplot(meta, aes(x = Group, y = Depth, fill = Group)) +
   geom_boxplot(width = 0.6) +
-  scale_fill_manual(values = c('Control' = 'darkgreen',
-                               'Beta-mannanase' = 'magenta')) +
+  scale_fill_manual(values = c('452' = 'darkgreen',
+                               '151' = 'magenta')) +
   facet_grid(. ~ Timepoint) +                         # <- aqui
   labs(title = 'Library Depth by Group and Timepoint',
        x = 'Group', y = 'Sequencing Depth') +
@@ -559,7 +760,7 @@ print(p0)
 # 7) Barchart de library size por amostra
 p1 <- ggplot(meta, aes(x = Sample, y = Depth, fill = Group)) +
   geom_bar(stat = 'identity') +
-  scale_fill_manual(values = c('Control' = 'darkgreen', 'Beta-mannanase' = 'magenta')) +
+  scale_fill_manual(values = c('452' = 'darkgreen', '151' = 'magenta')) +
   labs(title = 'Library Size by Sample', x = 'Sample ID', y = 'Sequencing Depth', fill = 'Group') +
   theme_bw() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1), legend.position = 'top')
 ggsave(file.path(overview_dir, 'fig1_library_size.pdf'), p1, width = 180, height = 120, units = 'mm', dpi = 300)
@@ -611,13 +812,15 @@ taxa_plot(ps_ASV,    'ASV',    20, '5')
 # 10) Limpa ambiente
 rm(list = ls(all = TRUE))
 ```
+The samples B09 and B37 are sample size outliers and we will keep an eye on them.
 \FloatBarrier
 
 # 1.0 Microbiome overview
 ## 1.1 Ajusting for calculations and tables
 Here we transform the data in relative abundances for proper evaluation.
 ```{r microbiome_overview, eval=T, echo=F}
-path <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Profa.Ines_hemicell_2025/Hemicell_results_final'
+library(writexl)
+path <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Tasso_et_al_2025/Analysis'
 overview = paste(path,"/overview/",sep = "")
 
 ps0.dna <- readRDS("ps1.dna.rds")
@@ -700,40 +903,40 @@ rm(list = ls(all = TRUE))
 ```
 \FloatBarrier
 
-### 1.1.2 Distribution of taxa in Control samples
-```{r Control_dist1, eval=T, echo=F}
-path <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Profa.Ines_hemicell_2025/Hemicell_results_final'
+### 1.1.2 Distribution of taxa in 452 samples
+```{r 452_dist1, eval=T, echo=F}
+path <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Tasso_et_al_2025/Analysis'
 over_group_timepoint = paste(path,"/overview_by_group_and_timepoint/",sep = "")
 dir.create(over_group_timepoint)
 
 ps <- readRDS("ps1.dna.rds")
-ps.Control <- subset_samples(ps, Group=='Control')
+ps.452 <- subset_samples(ps, Group=='452')
 
 #Aglomerações
-ps.Control.phy <- tax_glom(ps.Control, "Phylum", NArm = TRUE)
-ps.Control.family <- tax_glom(ps.Control, "Family", NArm = TRUE)
-ps.Control.genus <- tax_glom(ps.Control, "Genus", NArm = TRUE)
+ps.452.phy <- tax_glom(ps.452, "Phylum", NArm = TRUE)
+ps.452.family <- tax_glom(ps.452, "Family", NArm = TRUE)
+ps.452.genus <- tax_glom(ps.452, "Genus", NArm = TRUE)
 
 #ASV level
-ps.Control.ra <- transform_sample_counts(ps.Control, function(x) x/sum(x))
+ps.452.ra <- transform_sample_counts(ps.452, function(x) x/sum(x))
 
 #Phylum level
-taxa_names(ps.Control.phy) <- tax_table(ps.Control.phy)[,2]
-ps.Control.phy.ra <- transform_sample_counts(ps.Control.phy, function(x) x/sum(x))
+taxa_names(ps.452.phy) <- tax_table(ps.452.phy)[,2]
+ps.452.phy.ra <- transform_sample_counts(ps.452.phy, function(x) x/sum(x))
 
 #Family level
-taxa_names(ps.Control.family) <- tax_table(ps.Control.family)[,5]
-ps.Control.family.ra <- transform_sample_counts(ps.Control.family, function(x) x/sum(x))
+taxa_names(ps.452.family) <- tax_table(ps.452.family)[,5]
+ps.452.family.ra <- transform_sample_counts(ps.452.family, function(x) x/sum(x))
 
 #Genus level
 #taxa_names(ps.dna.genus) <- tax_table(ps.dna.genus)[,6]
-ps.Control.genus.ra <- transform_sample_counts(ps.Control.genus, function(x) x/sum(x))
-ps.Control.genus.melt <- psmelt(ps.Control.genus.ra)
+ps.452.genus.ra <- transform_sample_counts(ps.452.genus, function(x) x/sum(x))
+ps.452.genus.melt <- psmelt(ps.452.genus.ra)
 
-df2 <- data.frame(tax_table(ps.Control.phy), taxprc = 100*taxa_sums(ps.Control.phy.ra)/length(sample_names(ps.Control.phy.ra)))
-df3 <- data.frame(tax_table(ps.Control.family), taxprc = 100*taxa_sums(ps.Control.family.ra)/length(sample_names(ps.Control.family.ra)))
-df4 <- data.frame(tax_table(ps.Control.genus),taxprc = 100*taxa_sums(ps.Control.genus.ra)/length(sample_names(ps.Control.genus.ra)))
-df5 <- data.frame(tax_table(ps.Control),taxprc = 100*taxa_sums(ps.Control.ra)/length(sample_names(ps.Control.ra)))
+df2 <- data.frame(tax_table(ps.452.phy), taxprc = 100*taxa_sums(ps.452.phy.ra)/length(sample_names(ps.452.phy.ra)))
+df3 <- data.frame(tax_table(ps.452.family), taxprc = 100*taxa_sums(ps.452.family.ra)/length(sample_names(ps.452.family.ra)))
+df4 <- data.frame(tax_table(ps.452.genus),taxprc = 100*taxa_sums(ps.452.genus.ra)/length(sample_names(ps.452.genus.ra)))
+df5 <- data.frame(tax_table(ps.452),taxprc = 100*taxa_sums(ps.452.ra)/length(sample_names(ps.452.ra)))
 
 df.count <- data.frame(Included = c("All", "> 0.01%", "> 0.1%","> 1%"),
                           Phylum = c(nrow(df2),sum(df2$taxprc > 0.01),sum(df2$taxprc > 0.1),sum(df2$taxprc > 1)),
@@ -741,40 +944,40 @@ df.count <- data.frame(Included = c("All", "> 0.01%", "> 0.1%","> 1%"),
                           Genus = c(nrow(df4),sum(df4$taxprc > 0.01),sum(df4$taxprc > 0.1),sum(df4$taxprc > 1)),
                           ASV = c(nrow(df5),sum(df5$taxprc > 0.01),sum(df5$taxprc > 0.1),sum(df5$taxprc > 1)))
 
-# Count of ASV and taxa in Control samples
-kable(df.count, row.names = F,digits = 1, caption = 'Abundance of phyla, family, genera and ASV in Control samples')%>% 
+# Count of ASV and taxa in 452 samples
+kable(df.count, row.names = F,digits = 1, caption = 'Abundance of phyla, family, genera and ASV in 452 samples')%>% 
   kable_classic(full_width = F, position = "left")%>%  
   kable_styling(latex_options = c("scale_down", "hold_position"))
 
 # Se quiser exportar para um arquivo Excel
-FileName <- paste(over_group_timepoint,"/Abundance of phyla, family, genera and ASV in Control samples.xlsx", sep = "")
+FileName <- paste(over_group_timepoint,"/Abundance of phyla, family, genera and ASV in 452 samples.xlsx", sep = "")
 write_xlsx(df.count,FileName)
 
 # Top 6 dominating phyla (prc abundance)
-kable(head(df2[order(df2$taxprc,decreasing = T),c("Kingdom","Phylum","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to phylum in Control samples',col.names = c("Kingdom","Phylum","Abundance (%)"))%>% 
+kable(head(df2[order(df2$taxprc,decreasing = T),c("Kingdom","Phylum","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to phylum in 452 samples',col.names = c("Kingdom","Phylum","Abundance (%)"))%>% 
   kable_classic(full_width = F, position = "left")%>%  
   kable_styling(latex_options = c("scale_down", "hold_position"))
 
 # Se quiser exportar para um arquivo Excel
-FileName <- paste(over_group_timepoint,"/Average abundance according to phylum in Control samples.xlsx", sep = "")
+FileName <- paste(over_group_timepoint,"/Average abundance according to phylum in 452 samples.xlsx", sep = "")
 write_xlsx(df2,FileName)
 
 # Top 6 dominating family (prc abundance)
-kable(head(df3[order(df3$taxprc,decreasing = T),c("Kingdom","Phylum","Family", "taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to family in Control samples',col.names = c("Kingdom","Phylum", "Family", "Abundance (%)"))%>% 
+kable(head(df3[order(df3$taxprc,decreasing = T),c("Kingdom","Phylum","Family", "taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to family in 452 samples',col.names = c("Kingdom","Phylum", "Family", "Abundance (%)"))%>% 
   kable_classic(full_width = F, position = "left")%>%  
   kable_styling(latex_options = c("scale_down", "hold_position"))
 
 # Se quiser exportar para um arquivo Excel
-FileName <- paste(over_group_timepoint,"/Average abundance according to family in Control samples.xlsx", sep = "")
+FileName <- paste(over_group_timepoint,"/Average abundance according to family in 452 samples.xlsx", sep = "")
 write_xlsx(df3,FileName)
 
 # Top 6 dominating (genera prc abundance)
-kable(head(df4[order(df4$taxprc,decreasing = T),c("Kingdom","Phylum","Class","Order","Family","Genus","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to genus in Control samples',col.names = c("Kingdom","Phylum","Class","Order","Family","Genus","Abundance (%)"))%>% 
+kable(head(df4[order(df4$taxprc,decreasing = T),c("Kingdom","Phylum","Class","Order","Family","Genus","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to genus in 452 samples',col.names = c("Kingdom","Phylum","Class","Order","Family","Genus","Abundance (%)"))%>% 
   kable_classic(full_width = F, position = "left")%>%  
   kable_styling(latex_options = c("scale_down", "hold_position"))
 
 # Se quiser exportar para um arquivo Excel
-FileName <- paste(over_group_timepoint,"/Average abundance according to genus in Control samples.xlsx", sep = "")
+FileName <- paste(over_group_timepoint,"/Average abundance according to genus in 452 samples.xlsx", sep = "")
 write_xlsx(df4,FileName)
 
 # clean environment
@@ -782,13 +985,13 @@ write_xlsx(df4,FileName)
 ```
 \FloatBarrier
 
-### 1.1.3 Distribution of taxa in Beta-mannanase samples
+### 1.1.3 Distribution of taxa in 151 samples
 ```{r beta_dis, eval=T, echo=F}
-path <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Profa.Ines_hemicell_2025/Hemicell_results_final'
+path <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Tasso_et_al_2025/Analysis'
 over_group_timepoint = paste(path,"/overview_by_group_and_timepoint/",sep = "")
 
 ps <- readRDS("ps1.dna.rds")
-ps.beta <- subset_samples(ps, Group=='Beta-mannanase')
+ps.beta <- subset_samples(ps, Group=='151')
 
 #Aglomerações
 ps.beta.phy <- tax_glom(ps.beta, "Phylum", NArm = TRUE)
@@ -822,40 +1025,40 @@ df.count <- data.frame(Included = c("All", "> 0.01%", "> 0.1%","> 1%"),
                           Genus = c(nrow(df4),sum(df4$taxprc > 0.01),sum(df4$taxprc > 0.1),sum(df4$taxprc > 1)),
                           ASV = c(nrow(df5),sum(df5$taxprc > 0.01),sum(df5$taxprc > 0.1),sum(df5$taxprc > 1)))
 
-# Count of ASV and taxa in Beta-mannanase samples
-kable(df.count, row.names = F,digits = 1, caption = 'Abundance of phyla, family, genera and ASV in Beta-mannanase samples')%>% 
+# Count of ASV and taxa in 151 samples
+kable(df.count, row.names = F,digits = 1, caption = 'Abundance of phyla, family, genera and ASV in 151 samples')%>% 
   kable_classic(full_width = F, position = "left")%>%  
   kable_styling(latex_options = c("scale_down", "hold_position"))
 
 # Se quiser exportar para um arquivo Excel
-FileName <- paste(over_group_timepoint,"/Abundance of phyla, family, genera and ASV in Beta-mannanase samples.xlsx", sep = "")
+FileName <- paste(over_group_timepoint,"/Abundance of phyla, family, genera and ASV in 151 samples.xlsx", sep = "")
 write_xlsx(df.count,FileName)
 
 # Top 6 dominating phyla (prc abundance)
-kable(head(df2[order(df2$taxprc,decreasing = T),c("Kingdom","Phylum","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to phylum in Beta-mannanase samples',col.names = c("Kingdom","Phylum","Abundance (%)"))%>% 
+kable(head(df2[order(df2$taxprc,decreasing = T),c("Kingdom","Phylum","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to phylum in 151 samples',col.names = c("Kingdom","Phylum","Abundance (%)"))%>% 
   kable_classic(full_width = F, position = "left")%>%  
   kable_styling(latex_options = c("scale_down", "hold_position"))
 
 # Se quiser exportar para um arquivo Excel
-FileName <- paste(over_group_timepoint,"/Average abundance according to phylum in Beta-mannanase samples.xlsx", sep = "")
+FileName <- paste(over_group_timepoint,"/Average abundance according to phylum in 151 samples.xlsx", sep = "")
 write_xlsx(df2,FileName)
 
 # Top 6 dominating family (prc abundance)
-kable(head(df3[order(df3$taxprc,decreasing = T),c("Kingdom","Phylum","Family", "taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to family in Beta-mannanase samples',col.names = c("Kingdom","Phylum", "Family", "Abundance (%)"))%>% 
+kable(head(df3[order(df3$taxprc,decreasing = T),c("Kingdom","Phylum","Family", "taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to family in 151 samples',col.names = c("Kingdom","Phylum", "Family", "Abundance (%)"))%>% 
   kable_classic(full_width = F, position = "left")%>%  
   kable_styling(latex_options = c("scale_down", "hold_position"))
 
 # Se quiser exportar para um arquivo Excel
-FileName <- paste(over_group_timepoint,"/Average abundance according to family in Beta-mannanase samples.xlsx", sep = "")
+FileName <- paste(over_group_timepoint,"/Average abundance according to family in 151 samples.xlsx", sep = "")
 write_xlsx(df3,FileName)
 
 # Top 6 dominating (genera prc abundance)
-kable(head(df4[order(df4$taxprc,decreasing = T),c("Kingdom","Phylum","Class","Order","Family","Genus","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to genus in Beta-mannanase samples',col.names = c("Kingdom","Phylum","Class","Order","Family","Genus","Abundance (%)"))%>% 
+kable(head(df4[order(df4$taxprc,decreasing = T),c("Kingdom","Phylum","Class","Order","Family","Genus","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to genus in 151 samples',col.names = c("Kingdom","Phylum","Class","Order","Family","Genus","Abundance (%)"))%>% 
   kable_classic(full_width = F, position = "left")%>%  
   kable_styling(latex_options = c("scale_down", "hold_position"))
 
 # Se quiser exportar para um arquivo Excel
-FileName <- paste(over_group_timepoint,"/Average abundance according to genus in Beta-mannanase samples.xlsx", sep = "")
+FileName <- paste(over_group_timepoint,"/Average abundance according to genus in 151 samples.xlsx", sep = "")
 write_xlsx(df4,FileName)
 
 # clean environment
@@ -863,9 +1066,9 @@ rm(list = ls(all = TRUE))
 ```
 \FloatBarrier
 
-### 1.1.4 Control x Beta-mannanase composition per Timepoint - Phylum level
-```{r Control_beta_comp_Phylum, eval=T, echo=F}
-path <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Profa.Ines_hemicell_2025/Hemicell_results_final'
+### 1.1.4 452 x 151 composition per Timepoint - Phylum level
+```{r 452_beta_comp_Phylum, eval=T, echo=F}
+path <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Tasso_et_al_2025/Analysis'
 over_Group_Timepoint = paste(path,"/overview_by_group_and_timepoint/",sep = "")
 
 #Importando o objeto phyloseq aglomerado em gênero
@@ -891,8 +1094,8 @@ Phylum.summary <- aggregate(Abundance~Group+Phylum, data = ps_ra_melt, FUN = mea
 Phylum.summary.ordered <- Phylum.summary[order(Phylum.summary$Abundance,decreasing = T),]
 
 # Encontrando top10 por Timepoint
-Phylum.top.1 <- Phylum.summary.ordered$Phylum[Phylum.summary.ordered$Group == "Control"][1:10]
-Phylum.top.2 <- Phylum.summary.ordered$Phylum[Phylum.summary.ordered$Group == "Beta-mannanase"][1:10]
+Phylum.top.1 <- Phylum.summary.ordered$Phylum[Phylum.summary.ordered$Group == "452"][1:10]
+Phylum.top.2 <- Phylum.summary.ordered$Phylum[Phylum.summary.ordered$Group == "151"][1:10]
 #Phylum.top.3 <- Phylum.summary.ordered$Phylum[Phylum.summary.ordered$Timepoint == "Timepoint 3"][1:10]
 
 # subset 
@@ -943,9 +1146,9 @@ rm(list = ls(all = TRUE))
 ```
 \FloatBarrier
 
-### 1.1.5 Control x Beta-mannanase composition per Timepoint - Family level
-```{r Control_dis_comp_family, eval=T, echo=F}
-path <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Profa.Ines_hemicell_2025/Hemicell_results_final'
+### 1.1.5 452 x 151 composition per Timepoint - Family level
+```{r 452_dis_comp_family, eval=T, echo=F}
+path <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Tasso_et_al_2025/Analysis'
 over_Group_Timepoint = paste(path,"/overview_by_group_and_timepoint/",sep = "")
 
 #Importando o objeto phyloseq aglomerado em gênero
@@ -971,15 +1174,15 @@ family.summary <- aggregate(Abundance~Group+Family, data = ps_ra_melt, FUN = mea
 family.summary.ordered <- family.summary[order(family.summary$Abundance,decreasing = T),]
 
 # Encontrando top10 por Timepoint
-family.top.1 <- family.summary.ordered$Family[family.summary.ordered$Group == "Control"][1:10]
-family.top.2 <- family.summary.ordered$Family[family.summary.ordered$Group == "Beta-mannanase"][1:10]
+family.top.1 <- family.summary.ordered$Family[family.summary.ordered$Group == "452"][1:10]
+family.top.2 <- family.summary.ordered$Family[family.summary.ordered$Group == "151"][1:10]
 #family.top.3 <- family.summary.ordered$Family[family.summary.ordered$Timepoint == "Timepoint 3"][1:10]
 
 # subset 
 top10 <- unique(c(family.top.1,family.top.2))#,family.top.3))
 top10.max <- aggregate(Abundance~Family, data = family.summary.ordered[family.summary.ordered$Family %in% top10,], max)
 
-family.keep <- top10.max$Family[top10.max$Abundance>0.05]
+family.keep <- top10.max$Family[top10.max$Abundance>0.03]
 
 # fig 3a (Boxplot top family por Timepoint)
 ps_ra_melt$Abundance_percent <- ifelse(ps_ra_melt$Abundance < 0.001, 0.1,ps_ra_melt$Abundance*100)
@@ -1023,9 +1226,9 @@ rm(list = ls(all = TRUE))
 ```
 \FloatBarrier
 
-### 1.1.6 Control x Beta-mannanase composition per Timepoint - Genus level
-```{r Control_dis_comp_genus, eval=T, echo=F}
-path <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Profa.Ines_hemicell_2025/Hemicell_results_final'
+### 1.1.6 452 x 151 composition per Timepoint - Genus level
+```{r 452_dis_comp_genus, eval=T, echo=F}
+path <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Tasso_et_al_2025/Analysis'
 over_Group_Timepoint = paste(path,"/overview_by_group_and_timepoint/",sep = "")
 
 #Importando o objeto phyloseq aglomerado em gênero
@@ -1051,8 +1254,8 @@ genus.summary <- aggregate(Abundance~Group+Genus, data = ps_ra_melt, FUN = mean)
 genus.summary.ordered <- genus.summary[order(genus.summary$Abundance,decreasing = T),]
 
 # find top 10 per time point
-genus.top.1 <- genus.summary.ordered$Genus[genus.summary.ordered$Group == "Control"][1:10]
-genus.top.2 <- genus.summary.ordered$Genus[genus.summary.ordered$Group == "Beta-mannanase"][1:10]
+genus.top.1 <- genus.summary.ordered$Genus[genus.summary.ordered$Group == "452"][1:10]
+genus.top.2 <- genus.summary.ordered$Genus[genus.summary.ordered$Group == "151"][1:10]
 #genus.top.3 <- genus.summary.ordered$Genus[genus.summary.ordered$Timepoint == "Timepoint 3"][1:10]
 
 # subset the ones with mead abundance above 
@@ -1107,74 +1310,98 @@ rm(list = ls(all = TRUE))
 
 # 2.0 Alpha diversity
 ## 2.1 Boxplot
-```{r alpha_boxplot, message=FALSE, warning=FALSE, echo=FALSE, fig.align='center', fig.width=6, fig.height=4, fig.cap='Mean Shannon diversity over Age by Group\n(Mean ± SE; ***/**/* indicates p<0.01/0.05/0.1)'}
-set.seed(123)
-
+```{r alpha_boxplot, message=FALSE, warning=FALSE, echo=FALSE, fig.align='center', fig.width=6, fig.height=4, fig.cap='Mean Shannon diversity over Days since start by Group\n(Mean ± SE; ***/**/* indicates p<0.01/0.05/0.1)'}
+# --- 1) Pacotes necessários ---
 library(phyloseq)
 library(nlme)
-library(emmeans)
-library(ggplot2)
 library(dplyr)
-library(tidyr)
+library(ggplot2)
 library(ggpubr)
+library(broom)
+library(tidyr)
 
-# 1. Diretório e dados
-path      <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Profa.Ines_hemicell_2025/Hemicell_results_final'
+# --- 2) Diretório e dados ---
+path      <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Tasso_et_al_2025/Analysis'
 alpha_div <- file.path(path, "alpha_div")
-if(!dir.exists(alpha_div)) dir.create(alpha_div, recursive=TRUE)
+if (!dir.exists(alpha_div)) dir.create(alpha_div, recursive = TRUE)
 
 ps      <- readRDS("ps1.dna.rds")
 df.adiv <- cbind(
   data.frame(sample_data(ps)),
-  estimate_richness(ps, measures="Shannon")
-)
+  estimate_richness(ps, measures = "Shannon")
+) %>%
+  mutate(
+    Timepoint = factor(Timepoint, levels = c("Timepoint1","Timepoint2")),
+    Group      = factor(Group)
+  )
 
-# 2. Fit Shannon mixed‐effects model
+# --- 3) Ajuste do modelo misto (Days_since_start contínuo) ---
+df_clean <- df.adiv %>%
+  select(
+    Shannon, Days_since_start, Group, Sex, Age,
+    BMI_classification, HbA1C, Hypertension,
+    Dyslipidemia, Hypothyroidism,
+    Antibiotic_use_.in_the_past_6_months.,
+    Alcohol_consumption, PatientID
+  ) %>%
+  drop_na()  # garante casos completos
+
+df_clean$BMI_classification <- factor(df_clean$BMI_classification, levels = c("normal weight", "overweight", "obesity"))
+df_clean$Antibiotic_use_.in_the_past_6_months. <- factor(df_clean$Antibiotic_use_.in_the_past_6_months., levels = c("no", "yes"))
+df_clean$Alcohol_consumption <- factor(df_clean$Alcohol_consumption, levels = c("no", "yes"))
+
+
 model_shannon <- lme(
-  fixed       = Shannon ~ Age * Group,
-  random      = ~ 1 | Animal,
-  correlation = corCAR1(form = ~ Age | Animal),
-  data        = df.adiv,
+  fixed       = Shannon ~ Days_since_start * Group +
+                  Sex + Age + BMI_classification + HbA1C +
+                  Hypertension + Dyslipidemia + Hypothyroidism +
+                  Antibiotic_use_.in_the_past_6_months. +
+                  Alcohol_consumption,
+  random      = ~ 1 | PatientID,
+  data        = df_clean,
   method      = "REML",
-  control     = lmeControl(maxIter=100, msMaxIter=100, opt="optim")
+  na.action   = na.omit,
+  control     = lmeControl(maxIter = 100, msMaxIter = 100, opt = "optim")
 )
 
-# 3. Contrastes Group dentro de cada Age
-emm_st <- emmeans(model_shannon, pairwise ~ Group | Age, adjust="none")
-cts_st <- summary(emm_st$contrasts) |>
-  as_tibble() |>
-  separate(contrast, into=c("group2","group1"), sep=" - ") |>
-  rename(p.value = p.value)
+# --- 4) Cálculo de p-values por Timepoint (t-test simples) ---
+group_lvls <- levels(df.adiv$Group)  # ex: c("Control","Treatment")
 
-# 4. Posições e rótulos
-pos_st <- df.adiv |> group_by(Age) |> summarise(y_max = max(Shannon))
-annots_st <- cts_st |>
-  left_join(pos_st, by="Age") |>
+pvals_tp <- df.adiv %>%
+  filter(!is.na(Shannon)) %>%
+  group_by(Timepoint) %>%
+  summarise(
+    p.value = t.test(Shannon ~ Group, data = cur_data())$p.value,
+    y_max   = max(Shannon, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
   mutate(
     y.position = y_max + 0.1,
-    label = case_when(
+    label      = case_when(
       p.value < 0.01 ~ "***",
       p.value < 0.05 ~ "**",
       p.value < 0.1  ~ "*",
       TRUE           ~ NA_character_
-    )
-  ) |>
+    ),
+    group1 = group_lvls[1],
+    group2 = group_lvls[2]
+  ) %>%
   filter(!is.na(label))
 
-# 5. Boxplot
-palette <- c("darkgreen","magenta")
-F_box <- ggplot(df.adiv, aes(Group, Shannon, color=Group, fill=Group)) +
-  geom_boxplot(outlier.shape=NA) +
-  stat_summary(fun=median, geom="crossbar", width=0.6, fatten=2, color="black") +
-  scale_color_manual(values=palette, name="Group") +
-  scale_fill_manual(values=palette, name="Group") +
-  facet_wrap(~Age, nrow=1) +
+# --- 5) Construção do boxplot facetado por Timepoint ---
+F_box <- ggplot(df.adiv, aes(Group, Shannon, color = Group, fill = Group)) +
+  geom_boxplot(outlier.shape = NA) +
+  stat_summary(fun = median, geom = "crossbar", width = 0.6,
+               fatten = 2, color = "black") +
+  scale_color_manual(values = c("darkgreen","magenta")) +
+  scale_fill_manual(values  = c("darkgreen","magenta")) +
+  facet_wrap(~ Timepoint, nrow = 1) +
   labs(
     y       = "Shannon diversity index",
     x       = NULL,
     caption = "* p < 0.1; ** p < 0.05; *** p < 0.01"
   ) +
-  theme_bw(base_size=11) +
+  theme_bw(base_size = 11) +
   theme(
     legend.position  = "bottom",
     axis.text.x      = element_blank(),
@@ -1182,108 +1409,112 @@ F_box <- ggplot(df.adiv, aes(Group, Shannon, color=Group, fill=Group)) +
     plot.caption     = element_text(size = 9, hjust = 0.5, face = "italic")
   ) +
   stat_pvalue_manual(
-    data        = annots_st,
-    mapping     = aes(x=group1, xend=group2, y.position=y.position, label=label),
+    data        = pvals_tp,
+    mapping     = aes(group1 = group1,
+                      group2 = group2,
+                      y.position = y.position,
+                      label = label),
     inherit.aes = FALSE,
     tip.length  = 0.02
   )
 
 print(F_box)
 
-# 6. Salvar
+# --- 6) Salvando a figura ---
 ggsave(
   file.path(alpha_div, "shannon_boxplot.pdf"),
-  plot  = F_box,
-  width = 6, height = 4, units = "in", dpi = 300
+  plot   = F_box,
+  width  = 6, height = 4, units = "in", dpi = 300
+)
+
+ggsave(
+  file.path(alpha_div, "shannon_boxplot.png"),
+  plot   = F_box,
+  width  = 6, height = 4, units = "in", dpi = 300
 )
 ```
+Shannon diversity indices were calculated from 16S rRNA gene sequencing data using the phyloseq R package. The data set was processed to include only complete cases for the variables of interest, which comprised Shannon diversity, days since study start, intervention group, sex, age, BMI classification, HbA1C, hypertension, dyslipidemia, hypothyroidism, recent antibiotic use, alcohol consumption, and patient ID.
+
+A linear mixed-effects model was fitted to assess the association between Shannon diversity and days since study start (as a continuous variable), with fixed effects for group, sex, age, BMI classification, HbA1C, hypertension, dyslipidemia, hypothyroidism, recent antibiotic use, and alcohol consumption. Patient ID was included as a random effect to account for repeated measures. Model estimation was performed using restricted maximum likelihood (REML) via the nlme package.
+
+For visualization, boxplots of Shannon diversity were generated for each group and timepoint using ggplot2, with additional summary statistics (median bars) and custom coloring. Group comparisons at each timepoint were performed using unpaired t-tests, and resulting p-values were annotated on the plots with standard significance codes (*p<0.1, **p<0.05, ***p<0.01). 
 \FloatBarrier
 
 ## 2.2 Alpha diversity lineplot
 ```{r alpha_lineplot, message=FALSE, warning=FALSE, echo=FALSE,fig.align='center', fig.width=8, fig.height=6,fig.cap='Mean Shannon diversity over Timepoint by Group\n(Mean ± SE; interaction details)\n* p < 0.1; ** p < 0.05; *** p < 0.01; ns = not significant'}
 set.seed(123)
 
+# --- 1) Pacotes necessários ---
 library(phyloseq)
 library(nlme)
-library(emmeans)
-library(ggplot2)
 library(dplyr)
+library(ggplot2)
 library(tidyr)
 
-# 1. Load data and define directories
-path      <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Profa.Ines_hemicell_2025/Hemicell_results_final'
+# --- 2) Diretórios e dados ---
+path      <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Tasso_et_al_2025/Analysis'
 alpha_div <- file.path(path, "alpha_div")
+if (!dir.exists(alpha_div)) dir.create(alpha_div, recursive = TRUE)
 
 ps      <- readRDS("ps1.dna.rds")
-df.adiv <- data.frame(sample_data(ps)) %>%
-  rownames_to_column("SampleID") %>%
+df.adiv <- sample_data(ps) %>% 
+  as("data.frame") %>%
   mutate(
-    Age       = as.numeric(Age),
-    Group     = factor(Group),
-    Timepoint = factor(
-      case_when(
-        Age == 20  ~ "D20",
-        Age == 25  ~ "D25",
-        Age == 103 ~ "D103"
-      ),
-      levels = c("D20","D25","D103")
-    )
+    Timepoint        = factor(Timepoint, levels = c("Timepoint1","Timepoint2")),
+    Days_since_start = as.numeric(Days_since_start),
+    Group            = factor(Group),
   ) %>%
-  bind_cols(estimate_richness(ps, measures = "Shannon")) %>%
-  filter(!is.na(Timepoint))
+  bind_cols( estimate_richness(ps, measures = "Shannon") ) %>%
+  drop_na(Timepoint, Days_since_start, Shannon, Group)
 
-# 2. Summary: mean ± SE by Timepoint & Group
+# --- 3) Sumário por Timepoint & Group (mean ± SE) ---
 df_sum <- df.adiv %>%
   group_by(Timepoint, Group) %>%
   summarise(
     meanShannon = mean(Shannon),
-    seShannon   = sd(Shannon)/sqrt(n()),
+    seShannon   = sd(Shannon) / sqrt(n()),
     .groups     = "drop"
   )
 
-# 3. Fit mixed model on Shannon ~ Timepoint * Group
+# --- 4) Modelo misto usando Days_since_start contínuo ---
+df_clean <- df.adiv %>%
+  select(
+    Shannon, Days_since_start, Group, Sex, 
+    BMI_classification, HbA1C,
+    Hypertension, Dyslipidemia, Hypothyroidism,
+    Antibiotic_use_.in_the_past_6_months., Alcohol_consumption,
+    PatientID
+  ) %>%
+  drop_na()
+
+df_clean$BMI_classification <- factor(df_clean$BMI_classification, levels = c("normal weight", "overweight", "obesity"))
+df_clean$Antibiotic_use_.in_the_past_6_months. <- factor(df_clean$Antibiotic_use_.in_the_past_6_months., levels = c("no", "yes"))
+df_clean$Alcohol_consumption <- factor(df_clean$Alcohol_consumption, levels = c("no", "yes"))
+
 model_shannon <- lme(
-  fixed       = Shannon ~ Timepoint * Group,
-  random      = ~ 1 | Animal,
-  correlation = corCAR1(form = ~ Age | Animal),
-  data        = df.adiv,
+  fixed       = Shannon ~ Days_since_start * Group +
+                  Sex + BMI_classification + HbA1C +
+                  Hypertension + Dyslipidemia + Hypothyroidism +
+                  Antibiotic_use_.in_the_past_6_months. +
+                  Alcohol_consumption,
+  random      = ~ 1 | PatientID,
+  data        = df_clean,
   method      = "REML",
+  na.action   = na.omit,
   control     = lmeControl(maxIter = 100, msMaxIter = 100, opt = "optim")
 )
 
-# 4. Extract p-values & significance symbols
-sm        <- summary(model_shannon)$tTable
-p_tp25    <- sm["TimepointD25",                  "p-value"]
-p_tp103   <- sm["TimepointD103",                 "p-value"]
-p_group   <- sm["GroupBeta-mannanase",           "p-value"]
-p_int25   <- sm["TimepointD25:GroupBeta-mannanase",  "p-value"]
-p_int103  <- sm["TimepointD103:GroupBeta-mannanase", "p-value"]
-
-sym_tp25   <- ifelse(p_tp25  <0.01, "***",
-                 ifelse(p_tp25  <0.05, "**",
-                 ifelse(p_tp25  <0.10, "*","ns")))
-sym_tp103  <- ifelse(p_tp103 <0.01, "***",
-                 ifelse(p_tp103 <0.05, "**",
-                 ifelse(p_tp103 <0.10, "*","ns")))
-sym_group  <- ifelse(p_group <0.01, "***",
-                 ifelse(p_group <0.05, "**",
-                 ifelse(p_group <0.10, "*","ns")))
-sym_int25  <- ifelse(p_int25 <0.01, "***",
-                 ifelse(p_int25 <0.05, "**",
-                 ifelse(p_int25 <0.10, "*","ns")))
-sym_int103 <- ifelse(p_int103<0.01, "***",
-                 ifelse(p_int103<0.05, "**",
-                 ifelse(p_int103<0.10, "*","ns")))
-
-# 5. Pairwise contrasts for Timepoint
-emm_tp <- emmeans(model_shannon, pairwise ~ Timepoint, adjust="none")
-cts_tp <- summary(emm_tp$contrasts) %>%
-  as_tibble() %>%
-  separate(contrast, into = c("group2","group1"), sep = " - ") %>%
-  rename(p.value = p.value) %>%
+# --- 5) Teste t em cada Timepoint para figura ---
+pvals_tp <- df.adiv %>%
+  group_by(Timepoint) %>%
+  summarise(
+    p.value = t.test(Shannon ~ Group, data = cur_data())$p.value,
+    y_max   = max(Shannon, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
   mutate(
-    y.position = max(df_sum$meanShannon + df_sum$seShannon) + seq(0.1, by=0.1, length.out = n()),
-    label = case_when(
+    y.position = y_max + 0.1,
+    label      = case_when(
       p.value < 0.01 ~ "***",
       p.value < 0.05 ~ "**",
       p.value < 0.10 ~ "*",
@@ -1292,17 +1523,7 @@ cts_tp <- summary(emm_tp$contrasts) %>%
   ) %>%
   filter(!is.na(label))
 
-# 6. Build subtitle text
-subtitle_text <- sprintf(
-  "Interactions—D25×Group: %s (p=%.3g), D103×Group: %s (p=%.3g)",
-  sym_tp25,   p_tp25,
-  sym_tp103,  p_tp103,
-  sym_group,  p_group,
-  sym_int25,  p_int25,
-  sym_int103, p_int103
-)
-
-# 7. Plot
+# --- 6) Monta o line-plot com errorbars e textos de p-valor ---
 palette <- c("darkgreen","magenta")
 F_line <- ggplot(df_sum, aes(x = Timepoint, y = meanShannon, color = Group, group = Group)) +
   geom_line(size = 1) +
@@ -1312,35 +1533,53 @@ F_line <- ggplot(df_sum, aes(x = Timepoint, y = meanShannon, color = Group, grou
                 width = 0.1) +
   scale_color_manual(values = palette, name = "Group") +
   labs(
-    title    = "Mean Shannon diversity over Timepoint by Group",
-    subtitle = subtitle_text,
-    x        = "Timepoint",
-    y        = "Mean Shannon ± SE",
-    caption  = "* p < 0.1; ** p < 0.05; *** p < 0.01; ns = not significant"
+    title    = "Mean Shannon Diversity over Timepoint by Group",
+    subtitle = sprintf(
+      "Interaction p = %.3g",
+      summary(model_shannon)$tTable[
+        paste0("Days_since_start:Group", levels(df.adiv$Group)[2]), "p-value"
+      ]
+    ),
+    x       = "Timepoint",
+    y       = "Mean Shannon ± SE",
+    caption = "* p < 0.1; ** p < 0.05; *** p < 0.01"
   ) +
-  stat_pvalue_manual(
-    data        = cts_tp,
-    mapping     = aes(x = group1, xend = group2, y.position = y.position, label = label),
-    inherit.aes = FALSE,
-    tip.length  = 0.02
-  ) +
-  theme_bw(base_size = 10) +
+  theme_bw(base_size = 11) +
   theme(
     legend.position = "bottom",
     plot.title      = element_text(hjust = 0.5),
     plot.subtitle   = element_text(hjust = 0.5),
     plot.caption    = element_text(size = 9, hjust = 0.5, face = "italic")
+  ) +
+  # adiciona os asteriscos acima de cada categoria, sem linhas de bracket
+  geom_text(
+    data          = pvals_tp,
+    aes(x = Timepoint, y = y.position, label = label),
+    inherit.aes   = FALSE,
+    size          = 5,
+    vjust         = 0
   )
 
 print(F_line)
 
-# 8. Save
+# --- 7) Salva figura ---
 ggsave(
   filename = file.path(alpha_div, "shannon_lineplot.pdf"),
   plot     = F_line,
   width    = 8, height = 6, units = "in", dpi = 300
 )
+ggsave(
+  filename = file.path(alpha_div, "shannon_lineplot.png"),
+  plot     = F_line,
+  width    = 8, height = 6, units = "in", dpi = 300
+)
 ```
+Shannon diversity indices were calculated using 16S rRNA gene sequencing data processed with the phyloseq R package. Only samples with complete data for all relevant variables were included. The dataset comprised Shannon diversity, days since study start, group allocation, sex, BMI classification, HbA1C, hypertension, dyslipidemia, hypothyroidism, recent antibiotic use, alcohol consumption, and patient ID.
+
+Summary statistics (mean ± standard error) of Shannon diversity were computed by group and timepoint. To assess the longitudinal effect of time and group, a linear mixed-effects model was fitted using the nlme package. The model included days since study start, group, and their interaction as fixed effects, as well as additional covariates (sex, BMI classification, HbA1C, hypertension, dyslipidemia, hypothyroidism, recent antibiotic use, and alcohol consumption). Patient ID was included as a random effect to account for repeated measures. Model estimation used restricted maximum likelihood (REML).
+
+For visualization, mean Shannon diversity values (± SE) were plotted by group across timepoints using line plots with error bars (ggplot2). Group comparisons at each timepoint were evaluated by unpaired t-tests, with p-values annotated on the plots using standard significance codes (*p<0.1, **p<0.05, ***p<0.01). The interaction p-value from the mixed-effects model was displayed in the plot subtitle to indicate whether temporal trends differed between groups. 
+
 \FloatBarrier
 ## 2.3 Alpha diversity mixed effects linear model
 ```{r alpha_b,eval=TRUE, echo=F}
@@ -1350,6 +1589,7 @@ library(dplyr)
 library(tibble)
 library(knitr)
 library(kableExtra)
+library(writexl)
 
 # 1. Extrair tabela de efeitos fixos e IC (apenas "fixed")
 sm <- summary(model_shannon)$tTable
@@ -1370,7 +1610,7 @@ tbl_shannon <- sm %>%
     `CI Upper` = ci[term, "upper"]
   )
 
-#tbl_shannon
+tbl_shannon
 
 # Se quiser exportar para um arquivo Excel
 FileName <- paste(alpha_div,"/Shannon model.xlsx", sep = "")
@@ -1390,33 +1630,74 @@ tbl_shannon %>%
     latex_options = c("scale_down", "hold_position")
   ) %>%
   footnote(
-    general       = "LME model with a continuous-time autoregressive correlation structure of order 1 for animal/group.",
+    general       = "LME model with a continuous-time structure for PatientID/group.",
     general_title = ""
   )
 
 # clean environment
-#rm(list = ls(all = TRUE))
+rm(list = ls(all = TRUE))
 ```
-\FloatBarrier
-(Intercept) = 4.9604 (SE = 0.1477), t(20) = 33.60, p < 10⁻¹⁸
-This is the predicted Shannon index at the reference levels—i.e. at Timepoint D20 for the reference group (“Health,” since “Beta-mannanase” is the other level) and at Age = 0 (or the baseline age). It’s highly significant, reflecting that the baseline diversity is about 4.96.
+Key Fixed Effects
 
-TimepointD25 = 0.0703 (SE = 0.1226), t(20) = 0.57, p = 0.573
-This is the change in Shannon diversity at D25 versus D20, within the reference group. A positive estimate (0.07) suggests a slight increase at D25, but it’s not statistically significant (p≈0.57), so we can’t conclude a real difference between D20 and D25 in the reference group.
+Days_since_start:
+Estimate: 0.0018, p-value: 0.18
 
-TimepointD103 = –0.4192 (SE = 0.1855), t(20) = –2.26, p = 0.035
-This is the change in Shannon at D103 versus D20, within the reference group. The estimate (–0.42) indicates a significant drop in diversity by D103 (p≈0.035), so diversity at D103 is about 0.42 units lower than at D20 for the reference group.
+Each additional day since the start is associated with a small, non-significant increase in Shannon diversity.
 
-GroupBeta-mannanase = 0.2261 (SE = 0.2040), t(15) = 1.11, p = 0.285
-This is the difference in baseline diversity (at D20) between the Beta-mannanase group and the reference group. A positive estimate (0.23) suggests higher diversity in Beta-mannanase animals at D20, but it’s not significant (p≈0.29).
+Group452:
+Estimate: –0.29, p-value: 0.24
 
-TimepointD25:GroupBeta-mannanase = –0.1363 (SE = 0.1680), t(20) = –0.81, p = 0.427
-This interaction tells you how much the change from D20→D25 differs in the Beta-mannanase group compared to reference. The estimate (–0.14) implies a slightly smaller increase (or even a slight decrease) in the Beta-mannanase animals, but it’s non-significant (p≈0.43).
+Group 452 has a lower Shannon diversity compared to the reference group, but this difference is not significant.
 
-TimepointD103:GroupBeta-mannanase = –0.2614 (SE = 0.2641), t(20) = –0.99, p = 0.334
-This interaction reflects how the drop from D20→D103 differs in Beta-mannanase animals versus reference. An estimate of –0.26 suggests a somewhat larger decrease by D103 in the treated group, but again it’s non-significant (p≈0.33).
+Sexmale:
+Estimate: –0.18, p-value: 0.48
 
-In sum: Shannon diversity declines significantly by D103 in the reference group. Neither the main effect of the Beta-mannanase treatment nor its interactions with time reach statistical significance, indicating that treatment animals follow a similar pattern of diversity change over time.
+Males have slightly lower Shannon diversity than females, but the difference is not significant.
+
+BMI_classificationoverweight:
+Estimate: 0.45, p-value: 0.095
+
+Individuals classified as overweight have higher Shannon diversity compared to normal weight, with the difference being marginally significant (p ≈ 0.095, 95% CI: –0.089 to 0.997). Suggestive of a possible positive effect, but not conventionally significant.
+
+BMI_classificationobesity:
+Estimate: 0.24, p-value: 0.35
+
+Obese individuals have a slightly higher Shannon diversity than normal weight, but this is not significant.
+
+HbA1C:
+Estimate: –0.040, p-value: 0.55
+
+No evidence of a significant association between HbA1C and Shannon diversity.
+
+Hypertensionyes:
+Estimate: –0.022, p-value: 0.93
+
+No effect; not significant.
+
+Dyslipidemiayes:
+Estimate: 0.23, p-value: 0.38
+
+No significant difference.
+
+Hypothyroidismyes:
+Estimate: 0.42, p-value: 0.33
+
+No significant difference.
+
+Days_since_start:Group452
+Estimate: –0.00403
+Standard Error: 0.00179
+t-value: –2.25
+p-value: 0.041
+95% CI: –0.00787 to –0.00019
+
+Interpretation
+This interaction term assesses whether the rate of change in Shannon diversity over time (days since start) differs between Group 452 and the reference group.
+
+The negative and statistically significant estimate (p = 0.041) indicates that, in Group 452, the Shannon diversity index changes at a significantly slower rate (or possibly declines) over time compared to the reference group, after adjusting for all other variables in the model.
+
+In practical terms:
+For each additional day since the start, Group 452 shows a decrease in Shannon diversity relative to the reference group, and this effect is unlikely to be due to random chance.
 \FloatBarrier
 
 ### 2.3.1 Checking residuals normality
@@ -1432,658 +1713,1027 @@ shapiro.test(residuals)
 The normality of the residuals validate the model adjustment.
 \FloatBarrier
 
-### 2.3.2 Predicted effects for Shannon index
-```{r alpha_d,eval=TRUE, echo=F}
-# carregar pacotes necessários
-library(sjPlot)
-library(sjmisc)
-
-# Plotar os efeitos fixos
-plot_model(model_shannon, type = "pred", terms = c("Timepoint", "Group")) +
-  theme_minimal() +
-  labs(title = "", 
-       x = "Timepoint", 
-       y = "Shannon Index", 
-       color = "Group")
-```
-\FloatBarrier
-
-### 2.3.3 Confidence Intervals of Model Coefficients
-```{r alpha_f,eval=TRUE, echo=F}
-library(dotwhisker)
-
-# Criar gráfico com intervalos de confiança
-dwplot(model_shannon) +
-  theme_minimal() +
-  labs(title = "",
-       x = "Coefficient", y = "Terms")
-
-# clean environment
-rm(list = ls(all = TRUE))
-
-# Eixo X
-#Significado: O eixo X mostra os coeficientes estimados para as variáveis do modelo, que podem incluir efeitos fixos e aleatórios.
-#Interpretação:
-#Cada barra representa o intervalo de confiança para um coeficiente. O centro da barra é o valor estimado do coeficiente.
-#O comprimento da barra indica a precisão da estimativa: intervalos mais curtos indicam maior precisão, enquanto intervalos mais longos sugerem maior incerteza na estimativa do coeficiente.
-#Interpretação dos Intervalos
-#Interseção com o Eixo Zero:
-#Se o intervalo de confiança de um coeficiente inclui zero, isso sugere que a variável não tem um efeito estatisticamente significativo na variável dependente. Isso significa que não há evidências suficientes para afirmar que essa variável está associada à variável dependente no nível desejado de significância.
-#Se o intervalo de confiança não inclui zero, isso sugere que a variável é estatisticamente significativa e tem um efeito sobre a variável dependente.
-```
-\FloatBarrier
-
 # 3.0 Beta diversity and Clustering - Cross Sectional and Time Series
 ```{r beta_div_a_ellipses, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
-# 0) Libraries
+# --- 0) Libraries ---
+library(phyloseq)
 library(compositions)
 library(vegan)
 library(ape)
-library(microbiome)
 library(ggplot2)
 library(dplyr)
+library(tibble)
 library(writexl)
+library(microbiome)
 
-# 1) Palette & shapes for Group × Timepoint
-palette        <- c(Control = "darkgreen", `Beta-mannanase` = "magenta")
-shapes         <- c(D20 = 21, D25 = 22, D103 = 24)
-ellipse_colors <- c(
-  "Control:D20"        = "darkgreen",
-  "Control:D25"        = "forestgreen",
-  "Control:D103"       = "palegreen",
-  "Beta-mannanase:D20" = "magenta",
-  "Beta-mannanase:D25" = "orchid",
-  "Beta-mannanase:D103"= "violet"
-)
+# --- 1) Palette & shapes for Group ---
+palette <- c("452" = "darkgreen", "151" = "magenta")
+shapes  <- c("452" = 21, "151" = 22)
 
-# 2) Paths
-path       <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Profa.Ines_hemicell_2025/Hemicell_results_final'
+# --- 2) Paths ---
+path       <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Tasso_et_al_2025/Analysis'
 Clustering <- file.path(path, "Clustering")
 dir.create(Clustering, showWarnings = FALSE, recursive = TRUE)
 
-# 3) Load phyloseq + metadata
+# --- 3) Load phyloseq object ---
 ps <- readRDS("ps1.dna.rds")
-meta <- sample_data(ps) %>%
-  as("data.frame") %>%
-  rownames_to_column("SampleID") %>%
-  mutate(
-    Age       = as.numeric(Age),
-    Timepoint = factor(paste0("D", Age), levels = c("D20","D25","D103")),
-    Group     = factor(Group, levels = names(palette)),
-    GroupTP   = interaction(Group, Timepoint, sep=":")
+
+# --- 4) Function to subset phyloseq by timepoint robustly ---
+phy_timepoint <- function(ps, tp_value) {
+  meta <- as(sample_data(ps), "data.frame")
+  keep_samples <- rownames(meta)[as.character(meta$Timepoint) == tp_value]
+  ps_sub <- prune_samples(keep_samples, ps)
+  ps_sub <- prune_taxa(taxa_sums(ps_sub) > 0, ps_sub)
+  return(ps_sub)
+}
+
+ps_tp1 <- phy_timepoint(ps, "Timepoint1")
+ps_tp2 <- phy_timepoint(ps, "Timepoint2")
+
+# --- 5) Function for beta diversity analysis and plotting ---
+run_beta_div <- function(ps_sub, tp) {
+  meta_sub <- sample_data(ps_sub) %>%
+    as("data.frame") %>%
+    mutate(Group = factor(Group, levels = names(palette)))
+  seq_counts <- as.data.frame(otu_table(ps_sub)) # amostras já em linhas!
+  
+  # Checagem de consistência
+  stopifnot(nrow(seq_counts) == nrow(meta_sub))
+  
+  # --- ILR-PCA ---
+  ilr_ratios <- compositions::ilr(as.matrix(seq_counts))
+  pca_res    <- prcomp(ilr_ratios, scale. = FALSE)
+  pca_vars   <- pca_res$sdev^2 / sum(pca_res$sdev^2)
+  df_pca     <- data.frame(
+    PC1 = pca_res$x[,1],
+    PC2 = pca_res$x[,2],
+    meta_sub
   )
+  p_pca <- ggplot(df_pca, aes(PC1, PC2, fill = Group, shape = Group)) +
+    stat_ellipse(aes(color = Group), geom = "path", size = 1, level = 0.95) +
+    geom_point(size = 3, color = "black", alpha = 0.85) +
+    scale_color_manual(values = palette) +
+    scale_fill_manual(values = palette) +
+    scale_shape_manual(values = shapes) +
+    labs(
+      title = paste0("ILR-PCA – ", tp),
+      x     = paste0("PC1 (", round(pca_vars[1]*100,1), "%)"),
+      y     = paste0("PC2 (", round(pca_vars[2]*100,1), "%)")
+    ) +
+    theme_bw(base_size = 12) +
+    theme(legend.position = "bottom")
+  print(p_pca)
+  ggsave(file.path(Clustering, paste0("ILR_PCA_", tp, ".pdf")), p_pca)
+  write_xlsx(df_pca, file.path(Clustering, paste0("ILR_PCA_scores_", tp, ".xlsx")))
+  
+  # --- PCoA Jaccard ---
+  jac_dmat <- vegdist(seq_counts, method = "jaccard")
+  pcoa_jac <- ape::pcoa(jac_dmat)
+  jac_vars <- pcoa_jac$values$Relative_eig
+  df_pcoa  <- data.frame(
+    Axis.1 = pcoa_jac$vectors[,1],
+    Axis.2 = pcoa_jac$vectors[,2],
+    meta_sub
+  )
+  p_pcoa <- ggplot(df_pcoa, aes(Axis.1, Axis.2, fill = Group, shape = Group)) +
+    stat_ellipse(aes(color = Group), geom = "path", size = 1, level = 0.95) +
+    geom_point(size = 3, color = "black", alpha = 0.85) +
+    scale_color_manual(values = palette) +
+    scale_fill_manual(values = palette) +
+    scale_shape_manual(values = shapes) +
+    labs(
+      title = paste0("PCoA (Jaccard) – ", tp),
+      x     = paste0("Axis 1 (", round(jac_vars[1]*100,1), "%)"),
+      y     = paste0("Axis 2 (", round(jac_vars[2]*100,1), "%)")
+    ) +
+    theme_bw(base_size = 12) +
+    theme(legend.position = "bottom")
+  print(p_pcoa)
+  ggsave(file.path(Clustering, paste0("PCoA_Jaccard_", tp, ".pdf")), p_pcoa)
+  write_xlsx(df_pcoa, file.path(Clustering, paste0("PCoA_Jaccard_scores_", tp, ".xlsx")))
+}
 
-my_theme <- theme_bw() +
-  theme(plot.margin = unit(c(1,1,1,1), "cm"),
-        legend.position = "right")
+# --- 6) Run for each timepoint ---
+run_beta_div(ps_tp1, "Timepoint1")
+run_beta_div(ps_tp2, "Timepoint2")
 
-# 4) Compute ILR-PCA
-seq_counts <- as.data.frame(t(otu_table(ps)))
-ilr_ratios <- compositions::ilr(t(seq_counts))
-pca_res    <- prcomp(ilr_ratios, scale.=FALSE)
-pca_vars   <- pca_res$sdev^2 / sum(pca_res$sdev^2)
-df_pca     <- data.frame(PC1 = pca_res$x[,1], PC2 = pca_res$x[,2], meta)
-
-p_pca <- ggplot(df_pca, aes(PC1, PC2)) +
-  stat_ellipse(aes(color = GroupTP, group = GroupTP),
-               geom = "path", size = 1, level = 0.95) +
-  geom_path(aes(group = SampleID), color = "gray70", alpha = 0.6) +
-  geom_point(aes(shape = Timepoint, fill = Group), size = 3, color = "black") +
-  scale_color_manual(values = ellipse_colors, name = "Group:Timepoint") +
-  scale_fill_manual(values = palette,          name = "Group") +
-  scale_shape_manual(values = shapes,          name = "Timepoint") +
-  coord_fixed(ratio = pca_vars[2]/pca_vars[1]) +
-  labs(
-    title = "PCA (ILR) with Patient Trajectories",
-    x     = paste0("PC1 (", round(pca_vars[1]*100,1), "%)"),
-    y     = paste0("PC2 (", round(pca_vars[2]*100,1), "%)")
-  ) +
-  my_theme
-
-print(p_pca)
-ggsave(file.path(Clustering, "pca_trajectory_ellipses.pdf"), p_pca)
-write_xlsx(df_pca, file.path(Clustering, "pca_trajectory_scores.xlsx"))
-
-# 5) PCoA Jaccard
-jac_dmat <- vegdist(t(seq_counts), method="jaccard")
-pcoa_jac <- ape::pcoa(jac_dmat)
-jac_vars <- pcoa_jac$values$Relative_eig
-df_pcoa  <- data.frame(Axis.1 = pcoa_jac$vectors[,1],
-                       Axis.2 = pcoa_jac$vectors[,2],
-                       meta)
-
-p_pcoa <- ggplot(df_pcoa, aes(Axis.1, Axis.2)) +
-  stat_ellipse(aes(color = GroupTP, group = GroupTP),
-               geom = "path", size = 1, level = 0.95) +
-  geom_path(aes(group = SampleID), color = "gray70", alpha = 0.6) +
-  geom_point(aes(shape = Timepoint, fill = Group), size = 3, color = "black") +
-  scale_color_manual(values = ellipse_colors, name = "Group:Timepoint") +
-  scale_fill_manual(values = palette,          name = "Group") +
-  scale_shape_manual(values = shapes,          name = "Timepoint") +
-  coord_fixed(ratio = jac_vars[2]/jac_vars[1]) +
-  labs(
-    title = "PCoA (Jaccard) with Patient Trajectories",
-    x     = paste0("Axis 1 (", round(jac_vars[1]*100,1), "%)"),
-    y     = paste0("Axis 2 (", round(jac_vars[2]*100,1), "%)")
-  ) +
-  my_theme
-
-print(p_pcoa)
-ggsave(file.path(Clustering, "pcoa_jaccard_trajectory_ellipses.pdf"), p_pcoa)
-write_xlsx(df_pcoa, file.path(Clustering, "pcoa_jaccard_trajectory_scores.xlsx"))
-
-# 6) NMDS Jaccard & Aitchison
-set.seed(123)
-jac_nmds  <- metaMDS(jac_dmat,   k=2, autotransform=FALSE, trymax=100)
-euc_dmat  <- dist(ilr_ratios)
-euc_nmds  <- metaMDS(euc_dmat,   k=2, autotransform=FALSE, trymax=100)
-
-df_jac_nd <- data.frame(MDS1 = jac_nmds$points[,1],
-                        MDS2 = jac_nmds$points[,2],
-                        meta)
-df_euc_nd <- data.frame(MDS1 = euc_nmds$points[,1],
-                        MDS2 = euc_nmds$points[,2],
-                        meta)
-
-p_nmds_jac <- ggplot(df_jac_nd, aes(MDS1, MDS2)) +
-  stat_ellipse(aes(color = GroupTP, group = GroupTP),
-               geom = "path", size = 1, level = 0.95) +
-  geom_path(aes(group = SampleID), color = "gray70", alpha = 0.6) +
-  geom_point(aes(shape = Timepoint, fill = Group), size = 3, color = "black") +
-  scale_color_manual(values = ellipse_colors, name = "Group:Timepoint") +
-  scale_fill_manual(values = palette,          name = "Group") +
-  scale_shape_manual(values = shapes,          name = "Timepoint") +
-  labs(title = paste0("NMDS (Jaccard), stress=", round(jac_nmds$stress,3))) +
-  my_theme
-
-print(p_nmds_jac)
-ggsave(file.path(Clustering, "nmds_jaccard_trajectory_ellipses.pdf"), p_nmds_jac)
-write_xlsx(df_jac_nd, file.path(Clustering, "nmds_jaccard_trajectory_scores.xlsx"))
-
-p_nmds_euc <- ggplot(df_euc_nd, aes(MDS1, MDS2)) +
-  stat_ellipse(aes(color = GroupTP, group = GroupTP),
-               geom = "path", size = 1, level = 0.95) +
-  geom_path(aes(group = SampleID), color = "gray70", alpha = 0.6) +
-  geom_point(aes(shape = Timepoint, fill = Group), size = 3, color = "black") +
-  scale_color_manual(values = ellipse_colors, name = "Group:Timepoint") +
-  scale_fill_manual(values = palette,          name = "Group") +
-  scale_shape_manual(values = shapes,          name = "Timepoint") +
-  labs(title = paste0("NMDS (Aitchison), stress=", round(euc_nmds$stress,3))) +
-  my_theme
-
-print(p_nmds_euc)
-ggsave(file.path(Clustering, "nmds_aitchison_trajectory_ellipses.pdf"), p_nmds_euc)
-write_xlsx(df_euc_nd, file.path(Clustering, "nmds_aitchison_trajectory_scores.xlsx"))
-```
-To corroborate the previous findings, we will perform an hierarchical clustering.
-
-## 3.1 Hierarchical clustering - Jaccard
-```{r hclust_jac, eval=T, echo=F}
-cluster_ex<-hclust(vegdist(t(seq_counts),method='jaccard'),method="complete")
-plot(cluster_ex,main='Jaccard Hierarchical Agglomerative Clustering',xlab='',sub='')
 ```
 \FloatBarrier
 
-## 3.2 Beta diversity statistical analysis
-### 3.2.1 Beta dispersion and permanova
-```{r beta_div_stat_1, eval=T, echo=F}
-set.seed(123)
+## 3.1 Beta diversity statistical analysis
+### 3.1.1 Beta dispersion
+```{r beta_disp, eval=T, echo=F}
+# --- Beta-dispersão por timepoint: Aitchison e Jaccard ---
 
-# 1) Test homogeneity of dispersion
-bd_ait   <- betadisper(euc_dmat, meta$Group)
-bd_jac   <- betadisper(jac_dmat, meta$Group)
-disp_ait <- anova(bd_ait)
-disp_jac <- anova(bd_jac)
+library(vegan)
+library(tibble)
+library(knitr)
+library(kableExtra)
+library(writexl)
+library(compositions)
 
-disp_table <- data.frame(
-  Distance = c("Aitchison", "Jaccard"),
-  F.value  = c(disp_ait$F[1],  disp_jac$F[1]),
-  P.value  = c(disp_ait$Pr[1], disp_jac$Pr[1])
-)
+# Função para rodar beta dispersão e gerar outputs bonitos
+run_beta_disp <- function(ps_sub, tp) {
+  meta_sub <- sample_data(ps_sub) %>% as("data.frame")
+  seq_counts <- as.data.frame(otu_table(ps_sub))
+  
+  # --- Aitchison (ILR + Euclidiana) ---
+  ilr_mat <- compositions::ilr(as.matrix(seq_counts))
+  euc_dist <- dist(ilr_mat)
+  bd_ait <- betadisper(euc_dist, meta_sub$Group)
+  disp_ait <- anova(bd_ait)
+  
+  # --- Jaccard ---
+  jac_dist <- vegdist(seq_counts, method = "jaccard")
+  bd_jac <- betadisper(jac_dist, meta_sub$Group)
+  disp_jac <- anova(bd_jac)
+  
+  # --- Organiza resultados ---
+  disp_table <- tibble(
+    Distance = c("Aitchison", "Jaccard"),
+    F.value  = c(disp_ait$`F value`[1],  disp_jac$`F value`[1]),
+    P.value  = c(disp_ait$`Pr(>F)`[1],   disp_jac$`Pr(>F)`[1])
+  )
+  print(disp_table) # para inspeção interativa
+  
+  disp_table %>%
+    kable(
+      digits  = 3,
+      caption = paste0("Test for homogeneity of dispersion (betadisper) – ", tp)
+    ) %>%
+    kable_styling(latex_options = c("hold_position", "scale_down"))
+  
+  # Exporta tabela em Excel (opcional)
+  write_xlsx(disp_table, file.path(Clustering, paste0("beta_disp_", tp, ".xlsx")))
+}
 
-# original console output (now commented out):
-# print(disp_table)
-# print(disp_ait)
-# print(disp_jac)
-
-# → Pretty table for betadisper
-disp_table %>%
-  knitr::kable(
-    digits  = 3,
-    caption = "Test for homogeneity of dispersion (betadisper)"
-  ) %>%
-  kableExtra::kable_styling(latex_options = c("hold_position","scale_down"))
-
-
-# 2) Prepare permutation schemes
-perm_block    <- how(nperm = 999, blocks = meta$Animal)
-perm_free     <- how(nperm = 999)
-
-# 3) PERMANOVA: Age effect (within-animal)
-perm_ait_tp <- adonis2(euc_dmat ~ Age, data = meta, permutations = perm_block)
-perm_jac_tp <- adonis2(jac_dmat ~ Age, data = meta, permutations = perm_block)
-
-# 4) PERMANOVA: Group effect (between‐subjects)
-perm_ait_grp <- adonis2(euc_dmat ~ Group, data = meta, permutations = perm_free)
-perm_jac_grp <- adonis2(jac_dmat ~ Group, data = meta, permutations = perm_free)
-
-# original console output (now commented out):
-#cat("\nPERMANOVA: Age effect\n"); print(perm_ait_tp); print(perm_jac_tp)
-#cat("\nPERMANOVA: Group effect\n");     print(perm_ait_grp); print(perm_jac_grp)
-
-# → Pretty tables for PERMANOVA
-broom::tidy(perm_ait_tp) %>%
-  knitr::kable(
-    digits  = 3,
-    caption = "PERMANOVA (Aitchison) – Age effect"
-  ) %>%
-  kableExtra::kable_styling(latex_options = c("hold_position","scale_down"))
-
-broom::tidy(perm_jac_tp) %>%
-  knitr::kable(
-    digits  = 3,
-    caption = "PERMANOVA (Jaccard) – Age effect"
-  ) %>%
-  kableExtra::kable_styling(latex_options = c("hold_position","scale_down"))
-
-broom::tidy(perm_ait_grp) %>%
-  knitr::kable(
-    digits  = 3,
-    caption = "PERMANOVA (Aitchison) – Group effect"
-  ) %>%
-  kableExtra::kable_styling(latex_options = c("hold_position","scale_down"))
-
-broom::tidy(perm_jac_grp) %>%
-  knitr::kable(
-    digits  = 3,
-    caption = "PERMANOVA (Jaccard) – Group effect"
-  ) %>%
-  kableExtra::kable_styling(latex_options = c("hold_position","scale_down"))
+# --- Rodar para cada timepoint ---
+run_beta_disp(ps_tp1, "Timepoint1")
+run_beta_disp(ps_tp2, "Timepoint2")
 ```
-The PERMANOVA presented statistically significant for Age on both distance metrics, but not significant for the Group variable.
+Interpretation:
+
+Timepoint 1
+
+Aitchison and Jaccard: There was no statistically significant difference in dispersion between the sample groups at Timepoint 1.
+
+Both p-values (0.225 and 0.244) are well above the standard threshold for significance (p < 0.05).
+
+Conclusion: The groups showed similar within-group variability (i.e., homogeneity of multivariate dispersion) at this timepoint.
+
+Interpretation:
+
+Aitchison: No significant difference in dispersion (p = 0.496).
+
+Jaccard: Significant difference in dispersion between groups (p = 0.0149).
+
+The relatively high F-value and low p-value for Jaccard indicate that, at Timepoint 2, the groups differed significantly in their internal variability according to the Jaccard metric.
+
+In other words, after treatment/intervention, one group became more heterogeneous in terms of presence/absence of ASVs than the other (according to Jaccard), but this was not detected using the Aitchison metric.
+
+Summary for reporting
+At Timepoint 1, there was no evidence of difference in dispersion between groups for either distance metric.
+
+At Timepoint 2, only the Jaccard metric revealed significantly different dispersions between groups, suggesting that, after the intervention, the groups varied more in terms of presence/absence of taxa.
+
+Note: When using PERMANOVA, significant differences in group dispersions can potentially influence the interpretation of group separation, as PERMANOVA is sensitive to both centroid and dispersion effects.
+
+### 3.1.2 PERMANOVA - Timepoint 1
+```{r beta_permanova, eval=T, echo=F}
+# --- PERMANOVA (Timepoint 1) ---
+
+library(vegan)
+library(compositions)
+library(broom)
+library(knitr)
+library(kableExtra)
+
+# Metadados e matriz de contagens
+meta_tp1 <- sample_data(ps_tp1) %>% as("data.frame")
+seq_tp1  <- as.data.frame(otu_table(ps_tp1))
+
+# --- Aitchison (ILR + Euclidiana) ---
+ilr_mat1 <- compositions::ilr(as.matrix(seq_tp1))
+dist_ait1 <- dist(ilr_mat1)
+perm_ait1 <- adonis2(dist_ait1 ~ Group, data = meta_tp1, permutations = 999)
+
+# --- Jaccard ---
+dist_jac1 <- vegdist(seq_tp1, method = "jaccard")
+perm_jac1 <- adonis2(dist_jac1 ~ Group, data = meta_tp1, permutations = 999)
+
+# --- Tabelas para knit/report ---
+broom::tidy(perm_ait1) %>%
+  kable(
+    digits = 3,
+    caption = "PERMANOVA (Aitchison distance) – Group – Timepoint 1"
+  ) %>%
+  kable_styling(latex_options = "hold_position")
+
+broom::tidy(perm_jac1) %>%
+  kable(
+    digits = 3,
+    caption = "PERMANOVA (Jaccard distance) – Group – Timepoint 1"
+  ) %>%
+  kable_styling(latex_options = "hold_position")
+
+# (Opcional) Print bruto para inspeção interativa
+print(perm_ait1)
+print(perm_jac1)
+```
+
+### 3.1.3 PERMANOVA - Timepoint 2
+```{r beta_perm2, eval=T, echo=F}
+# --- PERMANOVA Aitchison (Timepoint 2) ---
+
+library(vegan)
+library(compositions)
+library(broom)
+library(knitr)
+library(kableExtra)
+
+# Metadados e matriz de contagens
+meta_tp2 <- sample_data(ps_tp2) %>% as("data.frame")
+seq_tp2  <- as.data.frame(otu_table(ps_tp2))
+
+# --- Aitchison (ILR + Euclidiana) ---
+ilr_mat2  <- compositions::ilr(as.matrix(seq_tp2))
+dist_ait2 <- dist(ilr_mat2)
+perm_ait2 <- adonis2(dist_ait2 ~ Group, data = meta_tp2, permutations = 999)
+
+# --- Tabela para knit/report ---
+broom::tidy(perm_ait2) %>%
+  kable(
+    digits = 3,
+    caption = "PERMANOVA (Aitchison distance) – Group – Timepoint 2"
+  ) %>%
+  kable_styling(latex_options = "hold_position")
+
+# (Opcional) Print bruto para inspeção interativa
+print(perm_ait2)
+
+```
+
+
+### 3.1.3 ANOSIM/MRPP - Timepoint 2
+```{r beta_anosim_mrpp, eval=T, echo=F}
+# --- ANOSIM e MRPP (Jaccard, Timepoint 2) ---
+
+library(vegan)
+library(knitr)
+library(kableExtra)
+library(tibble)
+
+# Metadados e matriz de contagens
+meta_tp2 <- sample_data(ps_tp2) %>% as("data.frame")
+seq_tp2  <- as.data.frame(otu_table(ps_tp2))
+
+# --- Jaccard distance ---
+jac_dist2 <- vegdist(seq_tp2, method = "jaccard")
+
+# --- ANOSIM ---
+anosim2 <- anosim(jac_dist2, grouping = meta_tp2$Group, permutations = 999)
+
+# --- MRPP ---
+mrpp2 <- mrpp(jac_dist2, grouping = meta_tp2$Group, permutations = 999)
+
+# --- Tabelas para knit/report ---
+tibble(
+  Method  = "ANOSIM (Jaccard)",
+  R.stat  = anosim2$statistic,
+  P.value = anosim2$signif
+) %>%
+  kable(
+    digits = 3,
+    caption = "ANOSIM (Jaccard) – Group – Timepoint 2"
+  ) %>%
+  kable_styling(latex_options = "hold_position")
+
+tibble(
+  Method  = "MRPP (Jaccard)",
+  A.stat  = mrpp2$A,
+  P.value = mrpp2$Pvalue
+) %>%
+  kable(
+    digits = 3,
+    caption = "MRPP (Jaccard) – Group – Timepoint 2"
+  ) %>%
+  kable_styling(latex_options = "hold_position")
+
+# (Opcional) Print bruto para inspeção interativa
+print(anosim2)
+print(mrpp2)
+
+```
+ANOSIM (Jaccard, Timepoint 2)
+R statistic: -0.05087
+
+This is a negative value, indicating that the average rank of dissimilarity within groups is actually greater than between groups. In other words, samples within the same group are not more similar to each other than samples from different groups—in fact, the opposite (but the effect is very weak).
+
+Significance (p-value): 0.966
+
+This is much greater than 0.05, so the result is not significant.
+
+Interpretation:
+There is no evidence of group separation based on the Jaccard dissimilarity in Timepoint 2. The grouping variable ("Group") does not explain any difference in community composition, according to ANOSIM.
+
+MRPP (Jaccard, Timepoint 2)
+A (chance-corrected within-group agreement): 0.00036
+
+The A statistic measures within-group agreement compared to random expectation.
+
+A value near 0 means that within-group similarity is about what would be expected by chance.
+
+Observed delta: 0.8232
+
+This is the weighted mean within-group distance.
+
+Expected delta: 0.8235
+
+The expected mean within-group distance under the null hypothesis.
+
+p-value: 0.418
+
+Not significant (p > 0.05).
+
+Interpretation:
+There is no evidence of difference between groups (i.e., the null hypothesis of no group structure cannot be rejected).
 
 ### 3.2.2 Interaction
 ```{r beta_div_stat_2, eval=T, echo=F}
-set.seed(123)
+# --- 0) Required packages ---
+library(phyloseq)
+library(compositions)
+library(vegan)
+library(permute)
+library(dplyr)
+library(broom)
+library(knitr)
+library(kableExtra)
 
-# 1) Set up block‐permutations for repeated measures
-perm_block <- how(nperm = 999, blocks = meta$Animal)
+# --- 1) Load phyloseq and metadata ---
+ps   <- readRDS("ps1.dna.rds")
+meta <- sample_data(ps) %>%
+  as("data.frame") %>%
+  mutate(
+    Group            = factor(Group),
+    Days_since_start = as.numeric(Days_since_start),
+    Timepoint        = factor(Timepoint, levels = c("Timepoint1","Timepoint2")),
+    GroupTP          = interaction(Group, Timepoint, sep = ":"),
+    PatientID        = factor(PatientID)
+  )
 
-# 2) PERMANOVA with Group × Age interaction
-perm_int_age <- adonis2(
-  euc_dmat ~ Group * Age,
-  data         = meta,
-  permutations = perm_block,
-  by           = "margin" #Teste controlado por todos os termos, inclusive pela interação
+# --- 2) Build distance matrices ---
+seq_counts <- as.data.frame(t(otu_table(ps)))
+if(taxa_are_rows(ps)) seq_counts <- t(seq_counts)
+ilr_ratios <- compositions::ilr(t(seq_counts))
+euc_dmat   <- dist(ilr_ratios)                         # Aitchison (clr → Euclid)
+jac_dmat   <- vegdist(t(seq_counts), method = "jaccard") # Jaccard
+
+# --- 3) Permutation schemes ---
+perm_block <- how(nperm = 999, blocks = meta$PatientID)  # repeated measures
+perm_free  <- how(nperm = 999)                          # independent
+
+# --- 4) PERMANOVA: Group × Days_since_start interaction ---
+perm_ait_int_time <- adonis2(
+  euc_dmat ~ Group * Timepoint,
+  data        = meta,
+  permutations = perm_block
+)
+perm_jac_int_time <- adonis2(
+  jac_dmat ~ Group * Timepoint,
+  data        = meta,
+  permutations = perm_block
 )
 
-# Original console output (commented out):
- #cat("\n## PERMANOVA: interaction Group × Age\n")
- #print(perm_int_age)
+# --- 5) ANOSIM & MRPP: interaction via the combined factor GroupTP ---
+anosim_ait_int <- anosim(euc_dmat, meta$GroupTP, permutations = 999)
+anosim_jac_int <- anosim(jac_dmat, meta$GroupTP, permutations = 999)
+mrpp_ait_int   <- mrpp(euc_dmat, meta$GroupTP, permutations = 999)
+mrpp_jac_int   <- mrpp(jac_dmat, meta$GroupTP, permutations = 999)
 
-# 3) Pretty‐print the interaction table
-broom::tidy(perm_int_age) %>%
-  knitr::kable(
-    digits  = 3,
-    caption = "PERMANOVA: interaction Group × Age"
-  ) %>%
-  kableExtra::kable_styling(
-    latex_options = c("hold_position", "scale_down")
-  )
+# --- 6) Format & display results ---
+
+# PERMANOVA tables
+broom::tidy(perm_ait_int_time) %>%
+  kable(digits = 3, caption = "PERMANOVA (Aitchison) — Group × Timepoint") %>%
+  kable_styling(latex_options = c("hold_position","scale_down"))
+
+broom::tidy(perm_jac_int_time) %>%
+  kable(digits = 3, caption = "PERMANOVA (Jaccard) — Group × Timepoint") %>%
+  kable_styling(latex_options = c("hold_position","scale_down"))
+
+#Comente para knit
+perm_ait_int_time
+perm_jac_int_time
+
+# ANOSIM results
+tibble(
+  Method  = c("ANOSIM Aitchison", "ANOSIM Jaccard"),
+  R.stat  = c(anosim_ait_int$statistic, anosim_jac_int$statistic),
+  P.value = c(anosim_ait_int$signif,    anosim_jac_int$signif)
+) %>%
+  kable(digits = 3, caption = "ANOSIM — Group × Timepoint interaction") %>%
+  kable_styling(latex_options = c("hold_position","scale_down"))
+
+#Comente para knit
+anosim_ait_int
+anosim_jac_int
+
+# MRPP results
+tibble(
+  Method  = c("MRPP Aitchison", "MRPP Jaccard"),
+  A.stat  = c(mrpp_ait_int$A,   mrpp_jac_int$A),
+  P.value = c(mrpp_ait_int$Pvalue, mrpp_jac_int$Pvalue)
+) %>%
+  kable(digits = 3, caption = "MRPP — Group × Timepoint interaction") %>%
+  kable_styling(latex_options = c("hold_position","scale_down"))
+
+#Comente para knit
+mrpp_ait_int
+mrpp_jac_int
+
+
 ```
-The PERMANOVA was not significant for the interaction between Group and Age.
+
+PERMANOVA (Aitchison and Jaccard, Group × Timepoint, Blocked by PatientID)
+Aitchison (Euclidean on ILR-transformed data):
+Model F = 0.84, R² = 0.034, p = 0.746
+
+The model (including group, timepoint, and their interaction) explained only about 3.4% of the variation in the data, and this was not statistically significant (p = 0.746).
+
+Interpretation: There is no evidence that group, timepoint, or their interaction explain the global variation in community composition when controlling for repeated measures (PatientID).
+
+Jaccard:
+Model F = 0.77, R² = 0.031, p = 0.567
+
+The model explained only 3.1% of the variation in Jaccard distances, also not significant (p = 0.567).
+
+Interpretation: Similarly, group and timepoint do not explain significant differences in microbial composition using the Jaccard metric.
+
+ANOSIM (Euclidean & Jaccard, Group × Timepoint)
+Euclidean (Aitchison):
+R = 0.007, p = 0.355
+
+The ANOSIM R value is almost zero, and the p-value is much higher than 0.05.
+
+Interpretation: There is no separation between the groups defined by Group × Timepoint.
+
+Jaccard:
+R = -0.047, p = 0.999
+
+The negative R and very high p-value indicate not only a lack of separation, but that within-group dissimilarity is (trivially) slightly higher than between groups—expected by chance.
+
+Interpretation: No group structure at all.
+
+MRPP (Euclidean & Jaccard, Group × Timepoint)
+Euclidean (Aitchison):
+A = -0.00396, p = 0.994
+
+A value of A near zero (or slightly negative) means within-group agreement is no better than random.
+
+Interpretation: No evidence of group structure.
+
+Jaccard:
+A = -0.00546, p = 0.994
+
+Again, A is basically zero, and p is not significant.
+
+Interpretation: No evidence of group structure for presence/absence data.
+
+Overall Summary
+All beta diversity analyses—PERMANOVA, ANOSIM, and MRPP—using both Aitchison and Jaccard distances found no evidence of significant group differences in microbial community composition when considering both group and timepoint (and their interaction), even after accounting for repeated measures by patient. In all analyses, the test statistics (F, R, A) were very close to zero, and p-values were far from significance. Thus, there is no detectable effect of group, timepoint, or their interaction on global beta diversity in this dataset.
 
 ### 3.2.3 Linear Mixed Effects models for beta diversity
 ```{r beta_model_euc,eval=T, echo=F}
 set.seed(123)
-# Modelo misto com intercepto
-# Se você acredita que diferentes pacientes podem ter trajetórias diferentes ao longo do tempo, modele (Tempo | ID do paciente (não da amostra))
-#Se você acredita que somente o paciente é um efeito aleatório, mas que os pacientes vão variar igualmente ao longo do tempo dentro do eu grupo amostral, modele (1 | ID do paciente)
-# Modelo linear misto para o primeiro componente principal (PC1)
 
-# assume pca_df e pcoa_df já existem do chunk anterior, com colunas:
-#   PC1, PC2, Axis.1, Axis.2, Group, Age (numérico), Animal
+# --- Bibliotecas ---
+library(phyloseq)
+library(compositions)
+library(vegan)
+library(ape)
+library(nlme)
+library(dplyr)
+library(tibble)
+library(knitr)
+library(kableExtra)
 
-# LME para PC1 (Aitchison PCA)
-# garante que Age seja numérico
-df_pca$Age <- as.numeric(df_pca$Age)
+# --- 1) Prepara o objeto phyloseq e metadados ---
+# ps já carregado
+meta <- sample_data(ps) %>%
+  as("data.frame") %>%
+  mutate(
+    Group     = factor(Group),
+    Timepoint = factor(Timepoint),
+    PatientID = factor(PatientID)
+  )
 
+# Matriz de contagens com amostras em linhas
+seq_counts <- as.data.frame(otu_table(ps))
+if(!identical(rownames(seq_counts), rownames(meta))) {
+  seq_counts <- seq_counts[rownames(meta), , drop = FALSE]
+}
+
+# --- 2) ILR-PCA (Aitchison) para todas as amostras ---
+ilr_mat <- compositions::ilr(as.matrix(seq_counts))
+pca_res <- prcomp(ilr_mat, scale. = FALSE)
+pca_vars <- pca_res$sdev^2 / sum(pca_res$sdev^2)
+
+df_pca <- data.frame(
+  PC1 = pca_res$x[,1],
+  PC2 = pca_res$x[,2],
+  meta
+)
+
+# --- 3) PCoA Jaccard para todas as amostras ---
+jac_dmat <- vegdist(seq_counts, method = "jaccard")
+pcoa_jac <- ape::pcoa(jac_dmat)
+jac_vars <- pcoa_jac$values$Relative_eig
+
+df_pcoa <- data.frame(
+  Axis.1 = pcoa_jac$vectors[,1],
+  Axis.2 = pcoa_jac$vectors[,2],
+  meta
+)
+
+# --- 4) Garante que Days_since_start está numérico ---
+df_pca$Days_since_start  <- as.numeric(df_pca$Days_since_start)
+df_pcoa$Days_since_start <- as.numeric(df_pcoa$Days_since_start)
+
+
+df_pca$BMI_classification <- factor(df_pca$BMI_classification, levels = c("normal weight", "overweight", "obesity"))
+df_pca$Antibiotic_use_.in_the_past_6_months. <- factor(df_pca$Antibiotic_use_.in_the_past_6_months., levels = c("no", "yes"))
+df_pca$Alcohol_consumption <- factor(df_pca$Alcohol_consumption, levels = c("no", "yes"))
+
+
+df_pcoa$BMI_classification <- factor(df_pca$BMI_classification, levels = c("normal weight", "overweight", "obesity"))
+df_pcoa$Antibiotic_use_.in_the_past_6_months. <- factor(df_pca$Antibiotic_use_.in_the_past_6_months., levels = c("no", "yes"))
+df_pcoa$Alcohol_consumption <- factor(df_pca$Alcohol_consumption, levels = c("no", "yes"))
+
+# --- 5) Modelos lineares mistos para cada componente ---
 model_PC1 <- lme(
-  fixed       = PC1 ~ Group * Age,
-  random      = ~ 1 | Animal,
-  correlation = corCAR1(form = ~ Age | Animal),
-  data        = df_pca,
-  method      = "REML",
-  control     = lmeControl(maxIter=100, msMaxIter=100, opt="optim")
+  fixed = PC1 ~ Days_since_start * Group +
+    Sex + BMI_classification + HbA1C +
+    Hypertension + Dyslipidemia + Hypothyroidism +
+    Antibiotic_use_.in_the_past_6_months. +
+    Alcohol_consumption,
+  random = ~ 1 | PatientID,
+  data = df_pca,
+  method = "REML",
+  na.action = na.omit,
+  control = lmeControl(maxIter=100, msMaxIter=100, opt="optim")
 )
 
-#summary(model_PC1)
+summary(model_PC1)
 
-# LME para PC2 (Aitchison PCA)
 model_PC2 <- lme(
-  fixed       = PC2 ~ Group * Age,
-  random      = ~ 1 | Animal,
-  correlation = corCAR1(form = ~ Age | Animal),
-  data        = df_pca,
-  method      = "REML",
-  control     = lmeControl(maxIter=100, msMaxIter=100, opt="optim")
+  fixed = PC2 ~ Days_since_start * Group +
+    Sex + BMI_classification + HbA1C +
+    Hypertension + Dyslipidemia + Hypothyroidism +
+    Antibiotic_use_.in_the_past_6_months. +
+    Alcohol_consumption,
+  random = ~ 1 | PatientID,
+  data = df_pca,
+  method = "REML",
+  na.action = na.omit,
+  control = lmeControl(maxIter=100, msMaxIter=100, opt="optim")
 )
 
-#summary(model_PC2)
-
-# LME para Axis.1 (Jaccard PCoA)
-df_pcoa$Age <- as.numeric(df_pcoa$Age)
+summary(model_PC2)
 
 model_A1 <- lme(
-  fixed       = Axis.1 ~ Group * Age,
-  random      = ~ 1 | Animal,
-  correlation = corCAR1(form = ~ Age | Animal),
-  data        = df_pcoa,
-  method      = "REML",
-  control     = lmeControl(maxIter=100, msMaxIter=100, opt="optim")
+  fixed = Axis.1 ~ Days_since_start * Group +
+    Sex + BMI_classification + HbA1C +
+    Hypertension + Dyslipidemia + Hypothyroidism +
+    Antibiotic_use_.in_the_past_6_months. +
+    Alcohol_consumption,
+  random = ~ 1 | PatientID,
+  data = df_pcoa,
+  method = "REML",
+  na.action = na.omit,
+  control = lmeControl(maxIter=100, msMaxIter=100, opt="optim")
 )
 
-#summary(model_A1)
+summary(model_A1)
 
-# LME para Axis.2 (Jaccard PCoA)
 model_A2 <- lme(
-  fixed       = Axis.2 ~ Group * Age,
-  random      = ~ 1 | Animal,
-  correlation = corCAR1(form = ~ Age | Animal),
-  data        = df_pcoa,
-  method      = "REML",
-  control     = lmeControl(maxIter=100, msMaxIter=100, opt="optim")
+  fixed = Axis.2 ~ Days_since_start * Group +
+    Sex + BMI_classification + HbA1C +
+    Hypertension + Dyslipidemia + Hypothyroidism +
+    Antibiotic_use_.in_the_past_6_months. +
+    Alcohol_consumption,
+  random = ~ 1 | PatientID,
+  data = df_pcoa,
+  method = "REML",
+  na.action = na.omit,
+  control = lmeControl(maxIter=100, msMaxIter=100, opt="optim")
 )
 
-#summary(model_A2)
+summary(model_A2)
 
-# Helper function to format and print LME model summaries
+# --- 6) Função para tabelas bonitas dos modelos ---
 print_lme_table <- function(model, model_name) {
-  # Summary object
   sm <- summary(model)
-
-  # 1) Fixed effects
-  fe <- as.data.frame(sm$tTable)
+  fe <- as.data.frame(sm$tTable, check.names = FALSE)
   fe$Term <- rownames(fe)
   fe <- fe %>%
     select(Term, everything()) %>%
     rename_with(~ c("Estimate", "Std. Error", "DF", "t value", "p value"), .cols = 2:6)
 
-  cat("## ", model_name, " - Fixed Effects\n")
+  cat("##", model_name, "- Fixed Effects\n")
   print(
     fe %>%
-      kable(
-        caption = paste(model_name, "- Fixed Effects"),
-        digits  = 3,
-        booktabs = TRUE
+      knitr::kable(
+        caption    = paste0(model_name, " fixed effects"),
+        digits     = 3,
+        booktabs   = TRUE
       ) %>%
-      kable_styling(
+      kableExtra::kable_styling(
         latex_options = c("hold_position", "scale_down")
       )
   )
 
-  # 2) Random effects variance (Animal intercept)
-  vc <- as.data.frame(VarCorr(model), stringsAsFactors = FALSE)
-  vc <- vc[vc$grp == "Animal" & vc$var1 == "(Intercept)", ]
-  re_df <- data.frame(
-    Group    = vc$grp,
-    Variance = vc$sdcor^2
+  # Random effects variance
+  vc_mat   <- as.matrix(VarCorr(model))
+  sd_inter <- as.numeric(vc_mat[1, "StdDev"])
+  re_df    <- tibble::tibble(
+    Group    = "PatientID",
+    Variance = sd_inter^2
   )
 
   cat("\n")
   print(
     re_df %>%
-      kable(
-        caption = paste(model_name, "- Random Effects Variance"),
-        digits  = 3,
+      knitr::kable(
+        caption  = paste0(model_name, " random‐effects variance"),
+        digits   = 3,
         booktabs = TRUE
       ) %>%
-      kable_styling(
+      kableExtra::kable_styling(
         latex_options = c("hold_position", "scale_down")
       )
   )
 
-  # 3) Correlation parameter (Phi)
-  phi <- coef(model$modelStruct$corStruct, unconstrained = FALSE)
-  cat("\n**Correlation (Phi):** ", round(phi, 3), "\n\n")
+  # Correlation (Phi)
+  phi_val <- try(coef(model$modelStruct$corStruct, unconstrained = FALSE), silent = TRUE)
+  phi_txt <- if (inherits(phi_val, "try-error") || is.null(phi_val)) {
+    "NA (no correlation structure)"
+  } else {
+    round(phi_val, 3)
+  }
+  cat("\n**Correlation (Phi):**", phi_txt, "\n\n")
 }
 
-# Print tables for each LME model
+# --- 7) Imprime as tabelas dos modelos ---
 print_lme_table(model_PC1, "PC1 (Aitchison PCA)")
 print_lme_table(model_PC2, "PC2 (Aitchison PCA)")
 print_lme_table(model_A1, "Axis.1 (Jaccard PCoA)")
 print_lme_table(model_A2, "Axis.2 (Jaccard PCoA)")
-# clean environment
-rm(list = ls(all = TRUE))
+
+# --- clean environment (opcional) ---
+# rm(list = ls(all = TRUE))
+
 ```
-1. PC1 (Aitchison PCA) model
+1. General Model Fit
+All models used a random intercept for PatientID, which accounts for repeated measures and inter-individual variation.
 
-Random effects:
-Between‐animal (intercept) SD ≈ 3.15
-Residual SD ≈ 2.96
-Autocorrelation (CAR(1)): φ = 0.892, indicating a strong decay in correlation as Age intervals increase.
+The number of patients was 24; the number of observations was 44.
 
-Fixed effects:
-Intercept: –17.04 (SE 1.78), t = –9.55, p < 0.0001
-Group (“Beta-mannanase” vs reference): –0.036 (SE 2.52), t = –0.01, p = 0.99 (ns)
-Age: +0.346 per day (SE 0.019), t = 18.45, p < 0.0001
-Interaction (Age × Group): –0.00128 (SE 0.0283), t = –0.05, p = 0.96 (ns)
+2. Random Effects
+PC1: Patient-level SD = 3.89; residual SD = 1.41
 
-Interpretation: PC1 scores increase strongly and highly significantly with Age. There is no evidence of a baseline group difference or an Age×Group interaction on PC1.
+PC2: Patient-level SD = 2.58; residual SD = 1.36
 
-2. PC2 (Aitchison PCA) model
+Axis.1: Patient-level SD = 0.16; residual SD = 0.05
 
-Random effects:
-Between‐animal SD ≈ 0.068
-Residual SD ≈ 8.98
-Autocorrelation: φ = 0.942 (even stronger temporal correlation)
+Axis.2: Patient-level SD = 0.11; residual SD = 0.06
 
-Fixed effects: all non‐significant:
-Intercept 2.43 (p = 0.57)
-Group effect p = 0.79
-Age effect p = 0.48
-Age×Group p = 0.81
+Interpretation:
+There is substantial inter-individual variability (as seen in the random intercept), indicating that patient identity is a relevant source of variation for all principal components.
 
-Interpretation: Neither Age nor Group (nor their interaction) explain variation in PC2 beyond what is captured by the random‐intercept and residual variation.
+3. Fixed Effects – Key Points
+PC1 (Aitchison PCA)
+No variable reached statistical significance at the conventional p < 0.05 level.
 
-3. Axis 1 (Jaccard PCoA) model
+Antibiotic_use_.in_the_past_6_months.yes had a marginally non-significant effect (estimate = +1.73, p = 0.079), suggesting a possible positive association with PC1, but this does not reach the conventional significance threshold.
 
-Random effects:
-Between‐animal SD ≈ 0.073
-Residual SD ≈ 0.065
-Autocorrelation: φ = 0.874
+All other covariates (Days_since_start, Group, Sex, BMI, HbA1C, etc.) were not significant (p > 0.1).
 
-Fixed effects:
-Intercept –0.320 (p < 0.0001)
-Age: +0.00657 per day (p < 0.0001)
-Group and Age×Group both non‐significant (p = 0.83 and p = 0.53, respectively)
+Interpretation:
+None of the modeled variables, including group, time, and clinical covariates, were significant predictors of the first principal component of the ILR-PCA.
 
-Interpretation: Jaccard Axis 1 also shows a small but highly significant positive association with Age, with no evidence for a treatment effect or interaction.
+PC2 (Aitchison PCA)
+Hypothyroidismyes was the only significant predictor (estimate = –5.55, p = 0.0317), indicating that hypothyroidism is associated with a substantial decrease in PC2.
 
-4. Axis 2 (Jaccard PCoA) model
+BMI_classificationoverweight was marginal (estimate = –2.59, p = 0.080), but did not reach significance.
 
-Random effects:
-Between‐animal SD ≈ 0.0018
-Residual SD ≈ 0.150
-Autocorrelation: φ = 0.853
-Fixed effects: all non‐significant (Age p = 0.93; Group p = 0.97; interaction p = 0.95)
+All other variables were not significant.
 
-Interpretation: No systematic effects of Age, Group, or their interaction on Jaccard Axis 2—variation is dominated by residual noise and the animal‐level random intercept.
+Interpretation:
+Only hypothyroidism was significantly associated with the second principal component (PC2), and no effect was observed for group, time, or their interaction.
 
-Overall: Across both ordination methods (Aitchison PCA and Jaccard PCoA), Age emerges as the only consistent, significant predictor (for PC1 and Axis 1). Group and the Age×Group interaction show no significant effects in any model. The high φ values (0.85–0.94) confirm strong within‐animal autocorrelation over time in all four measures.
+Axis.1 (Jaccard PCoA)
+No variable was statistically significant.
 
+BMI_classificationoverweight showed a trend toward a negative association (estimate = –0.109, p = 0.0996), but this is only marginal.
+
+Interpretation:
+None of the predictors explained significant variation in the first principal coordinate from Jaccard PCoA.
+
+Axis.2 (Jaccard PCoA)
+BMI_classificationoverweight (estimate = –0.177, p = 0.0112) and Hypothyroidismyes (estimate = –0.229, p = 0.044) were both significantly negatively associated with Axis.2.
+
+Alcohol_consumptionyes was marginal (estimate = –0.117, p = 0.0911).
+
+Interpretation:
+Overweight BMI and hypothyroidism are both associated with lower values on Axis.2 of the Jaccard PCoA, suggesting an effect of these clinical factors on this component of community composition.
+
+4. Interaction (Days_since_start:Group452)
+The interaction between time and group was not significant in any model (p > 0.2 for all).
+
+This indicates there is no evidence that the trajectory over time differs between groups for any principal component/coordinate.
+
+5. Model Residuals
+The standardized residuals for all models were well within the usual range (–1.6 to +1.4), suggesting no gross violation of model assumptions.
+
+Summary:
+In linear mixed-effects models analyzing the first two principal components from ILR-PCA and Jaccard PCoA, no significant effects were observed for the main grouping variable, time, or their interaction. Notably, hypothyroidism was significantly associated with PC2 (Aitchison) and Axis.2 (Jaccard), and overweight BMI also negatively affected Axis.2. Patient identity accounted for a considerable proportion of variance, but overall, group and time did not explain differences in community structure in these ordination spaces.
 \FloatBarrier
 
 # 4.0 Differential Abundance (MaAsLin2)
-## 4.1 Genus level - interaction
-```{r diff_abun_maaslin_genus, eval=F, echo=F}
-path <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Profa.Ines_hemicell_2025/Hemicell_results_final'
-Dif_abundance_g_int = paste(path,"/Differential_abundance_genus_interaction/",sep = "")
-dir.create(Dif_abundance_g_int)
+## 4.1 Interaction
+```{r diff_abun_maaslin, eval=F, echo=F}
+library(microbiomeutilities)
 
-#Importando o objeto phyloseq
-ps0 <- readRDS("ps1.dna.genus.rds")
-ps <- format_to_besthit(ps0)
+# 0) Paths & output directory
+path    <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Tasso_et_al_2025/Analysis'
+out_dir <- file.path(path, "Differential_abundance")
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 
-#Preparing the feature table
-# Extrair a tabela de abundâncias
-feature_table <- as.data.frame(otu_table(ps))
+# 1) Load phyloseq and prepare inputs
+ps0 <- readRDS("ps1.dna.rds")
+ps  <- format_to_besthit(ps0)
 
-#Extraindo os metadados
-metadata <- microbiome::meta(ps)
+# 1a) Feature table: samples × taxa
+feat <- as.data.frame(otu_table(ps))
+if (taxa_are_rows(ps)) feat <- t(feat)
 
-# Criando uma variável de interação (Maaslin2 não aceita interação na modelagem)
-metadata$Group_Age_interaction <- interaction(metadata$Group, metadata$Age)
+# 1b) Metadata
+meta <- microbiome::meta(ps)
 
-# Verificar se as amostras estão nas colunas; se sim, transpor a tabela
-if (taxa_are_rows(ps)) {
-  feature_table <- t(feature_table)
-}
+# 1c) Create Group × time interaction
+meta$Group_Timepoint <- interaction(meta$Group, meta$Timepoint, sep=".")
 
-# Executar o MaAsLin2
+# Padronizar: substituir "" por NA
+meta$BMI_classification[meta$BMI_classification == ""] <- NA
+meta$Hypertension[meta$Hypertension == ""] <- NA
+meta$Dyslipidemia[meta$Dyslipidemia == ""] <- NA
+meta$Hypothyroidism[meta$Hypothyroidism == ""] <- NA
+meta$Antibiotic_use_.in_the_past_6_months.[meta$Antibiotic_use_.in_the_past_6_months. == ""] <- NA
+meta$Alcohol_consumption[meta$Alcohol_consumption == ""] <- NA
+
+# Converter para fator (ou numérico, no caso de HbA1C)
+meta$BMI_classification <- as.factor(meta$BMI_classification)
+meta$Hypertension <- as.factor(meta$Hypertension)
+meta$Dyslipidemia <- as.factor(meta$Dyslipidemia)
+meta$Hypothyroidism <- as.factor(meta$Hypothyroidism)
+meta$Antibiotic_use_.in_the_past_6_months. <- as.factor(meta$Antibiotic_use_.in_the_past_6_months.)
+meta$Alcohol_consumption <- as.factor(meta$Alcohol_consumption)
+meta$HbA1C <- as.numeric(meta$HbA1C)
+meta$Group <- as.factor(meta$Group)
+
+# Atualizar os metadados no phyloseq
+sample_data(ps) <- sample_data(meta)
+
+# 2) Run MaAsLin2 with all covariates
+library(Maaslin2)
 fit_data <- Maaslin2(
-    input_data = feature_table,
-    input_metadata = metadata,
-    output = Dif_abundance_g_int,
-    fixed_effects = c("Group", "Age", "Group_Age_interaction"),
-    random_effects = "Animal",
-    reference = c("Group,Control;Age,20;Group_Age_interaction,Control.20"),
-    normalization = "CLR",
-    transform = "LOG",      # Transformação logarítmica
-    analysis_method = "LM", # Modelo Linear
-    min_prevalence = 0.1,
-    min_abundance = 0.1,
-    correction = "BH",
-    standardize = TRUE,
-    cores = 20
+  input_data       = feat,
+  input_metadata   = meta,
+  output            = out_dir,
+  fixed_effects    = c(
+    "Group",
+    "Timepoint",
+    "Group_Timepoint",
+    "BMI_classification",
+    "HbA1C",
+    "Hypertension",
+    "Dyslipidemia",
+    "Hypothyroidism",
+    "Antibiotic_use_.in_the_past_6_months.",
+    "Alcohol_consumption"
+  ),
+  random_effects   = "PatientID",
+  reference        = c(
+    "Group,151",
+    "Timepoint,Timepoint1",
+    "Group_Timepoint,151.Timepoint1",
+    "BMI_classification,normal weight",
+    "Hypertension,no",
+    "Dyslipidemia,no",
+    "Hypothyroidism,no",
+    "Antibiotic_use_.in_the_past_6_months.,no",
+    "Alcohol_consumption,no"
+  ),
+  normalization    = "CLR",
+  transform         = "LOG",
+  analysis_method  = "LM",
+  min_prevalence   = 0.1,
+  min_abundance    = 0.1,
+  correction       = "BH",
+  standardize      = TRUE,
+  cores            = 8
 )
 
-# clean environment
+# 3) Clean up
 rm(list = ls(all = TRUE))
 ```
+https://www.midasfieldguide.com/guide/fieldguide/genus/nk4a214_group
 
 ```{r maaslin2_cat_bar_interaction_individual, eval=TRUE, message=FALSE, warning=FALSE, echo=FALSE, fig.align='center', fig.width=8, fig.height=6}
+#  ================================================
+#  Differential‐Abundance Barplots (Maaslin2 output)
+#  ================================================
+#  1) Libraries + directory setup
+#  ================================================
 library(readr)
 library(dplyr)
-library(tidyr)
 library(ggplot2)
 library(forcats)
-library(RColorBrewer)
+library(grid)      # for unit()
+library(stringr)   # for str_replace_all()
 
-# 0) Paths
-base_path <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Profa.Ines_hemicell_2025/Hemicell_results_final'
-dif_dir   <- file.path(base_path, "Differential_abundance_genus_interaction")
-feat_dir  <- file.path(dif_dir, "features")
+# (a) Base path & output directory:
+base_path <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Tasso_et_al_2025/Analysis'
+out_dir   <- file.path(base_path, "Differential_abundance")
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 
-# 1) Facets we want: Group and Group × Age interaction
-facet_order <- c("Group", "Group_Age_interaction")
-
-# 2) Read & pick top 10 features per facet
-allres <- read_tsv(file.path(dif_dir, "all_results.tsv"))
-top10  <- allres %>%
-  filter(metadata %in% facet_order) %>%
-  group_by(metadata) %>%
-  slice_min(order_by = pval, n = 10, with_ties = FALSE) %>%
-  ungroup()
-
-# 3) Abundance in long format
-abund_long <- read_tsv(file.path(feat_dir, "filtered_data_norm_transformed.tsv")) %>%
-  rename(SampleID = feature) %>%
-  pivot_longer(-SampleID, names_to = "feature", values_to = "abundance")
-
-# 4) Load phyloseq and build metadata with the correct interaction name
-ps     <- readRDS("ps1.dna.genus.rds")
-meta_df <- sample_data(ps) %>%
-  as("data.frame") %>%
-  rownames_to_column("SampleID") %>%
-  mutate(
-    Group                     = factor(Group, levels = c("Control","Beta-mannanase")),
-    Age_factor                = factor(Age,   levels = c(20,25,103)),
-    Group_Age_interaction     = interaction(Group, Age_factor, sep = ":")
-  )
-
-# 5) Combine results + abundance + metadata
-df_full <- top10 %>%
-  inner_join(abund_long, by = "feature") %>%
-  left_join(meta_df,    by = "SampleID") %>%
-  rowwise() %>%
-    mutate(value = get(metadata)) %>%
-  ungroup()
-
-# 6) Summarize mean ± SE and reorder features by p-value
-summary_df <- df_full %>%
-  group_by(metadata, feature, value, pval) %>%
-  summarise(
-    mean_abund = mean(abundance, na.rm = TRUE),
-    se_abund   = sd(abundance,   na.rm = TRUE)/sqrt(n()),
-    .groups    = "drop"
-  ) %>%
-  group_by(metadata) %>%
-    mutate(feature = fct_reorder(feature, pval)) %>%
-  ungroup() %>%
-  mutate(metadata = factor(metadata, levels = facet_order))
-
-# 7) Colour setup
-fill_base <- c(
-  Control        = "darkgreen",
-  `Beta-mannanase` = "magenta"
+#  ================================================
+#  2) Read MaAsLin2 “significant_results.tsv”
+#     (this file must have been written by Maaslin2)
+#  ================================================
+res <- read_tsv(
+  file.path(out_dir, "significant_results.tsv"),
+  show_col_types = FALSE
 )
-int_lv    <- sort(unique(summary_df$value[summary_df$metadata=="Group_Age_interaction"]))
-fill_int  <- setNames(brewer.pal(length(int_lv), "Dark2"), int_lv)
-fill_cols <- c(fill_base, fill_int)
 
-# 8) Loop over facets and plot (skip if no data)
-for(var in facet_order) {
-  df_var <- filter(summary_df, metadata == var)
-  if(nrow(df_var) == 0) next
+#  Check columns quickly:
+#  feature   metadata   value   coef   stderr   qval   ... 
+#  -----------------------------------------------------
+#  “feature”   = the taxonomic feature name (e.g. genus)
+#  “metadata”  = which variable was the coefficient (e.g. “Group” or “Timepoint” etc.)
+#  “value”     = the category within that metadata (e.g. “452” or “Timepoint2” etc.)
+#  “coef”      = the estimated log₂ fold‐change (LFC) for (value vs reference)
+#  “qval”      = FDR‐corrected p‐value
 
-  lab <- if(var == "Group") "Group" else "Group × Age"
-
-  # build italicized labels, dropping everything before the last dot
-  lab_expr <- setNames(
-    sapply(levels(df_var$feature), function(feat) {
-      nm <- sub("^.*\\.([^\\.]+)$", "\\1", feat)
-      paste0("italic(", nm, ")~sp.")
-    }),
-    levels(df_var$feature)
+#  ================================================
+#  3) Define reference‐levels for each metadata
+#     (Change these if you used different references in Maaslin2)
+#  ================================================
+ref_values <- c(
+  Group              = "151",          # e.g. Group’s reference was “151”
+  Timepoint          = "Timepoint1",   # Timepoint’s reference was “Timepoint1”
+  Group_Timepoint    = "151.Timepoint1",# Group_Timepoint’s reference was “151.Timepoint1”
+  BMI_classification = "normal weight",
+  Hypertension       = "no",
+  Dyslipidemia       = "no",
+  Hypothyroidism     = "no",
+  Antibiotic_use_.in_the_past_6_months. = "no",
+  Alcohol_consumption = "no"
   )
 
-  p <- ggplot(df_var, aes(x = feature, y = mean_abund, fill = value)) +
-    geom_col(position = position_dodge(0.8), width = 0.7) +
-    geom_errorbar(aes(
-      ymin = mean_abund - se_abund,
-      ymax = mean_abund + se_abund
-    ), position = position_dodge(0.8), width = 0.2) +
-    coord_flip() +
-    scale_x_discrete(labels = parse(text = lab_expr)) +
-    scale_fill_manual(values = fill_cols, name = lab) +
-    labs(
-      title = paste0("Top 10 genera for ", lab),
-      x     = NULL,
-      y     = "Mean abundance ± SE"
+
+#  ================================================
+#  4) Keep only the three variables we want to plot
+#     (Group, Timepoint, Group_Timepoint)
+#  ================================================
+#    Filter out any metadata lines that are NOT exactly "Group", "Timepoint", or "Group_Timepoint".
+plot_vars <- c("Group", 
+               "Timepoint", 
+               "Group_Timepoint", 
+               "BMI_classification", 
+               "Hypertension", 
+               "Dyslipidemia",
+               "Hypothyroidism",
+               "Antibiotic_use_.in_the_past_6_months.",
+               "Alcohol_consumption")
+df_keep   <- res %>%
+  filter(metadata %in% plot_vars)
+
+#  If you also want to filter strictly qval < 0.05, uncomment:
+# df_keep <- df_keep %>% filter(qval < 0.05)
+
+#  ================================================
+#  5) For each (metadata,value) combination,
+#     pick up to the top 10 features by q‐value
+#  ================================================
+topn_per_combo <- df_keep %>%
+  arrange(metadata, value, qval) %>%               # sort by metadata → value → ascending qval
+  group_by(metadata, value) %>%
+  slice_head(n = 10) %>%                            # pick top 10 (or fewer) per (metadata,value)
+  ungroup()
+
+#  If you prefer “up to 10 most significant” even if fewer have q < 0.05, you can pre‐filter qval:
+# topn_per_combo <- df_keep %>%
+#   filter(qval < 0.05) %>%
+#   arrange(metadata, value, qval) %>%
+#   group_by(metadata, value) %>%
+#   slice_head(n = 10) %>%
+#   ungroup()
+
+#  ================================================
+#  6) Build a small helper function to draw one bar‐plot
+#  ================================================
+make_barplot_for_combo <- function(df_subset) {
+  # df_subset has columns: feature, metadata, value, coef, stderr, qval, ...
+  # Step 1: rename “coef” → “lfc”, compute “direction”, reorder factor:
+  df_plot <- df_subset %>%
+    rename(lfc = coef) %>%
+    mutate(
+      direction = if_else(lfc >= 0, "Positive LFC", "Negative LFC"),
+      feature   = fct_reorder(feature, abs(lfc))
+    )
+  # Step 2: figure out the (metadata,value) → reference, to label the title:
+  mvar  <- unique(df_plot$metadata)   # e.g. "Group"
+  val   <- unique(df_plot$value)      # e.g. "452" or "Timepoint2" or "452.Timepoint2"
+  # Look up reference:
+  ref   <- ref_values[mvar]
+  # Build a title string like “Group: 452 vs 151”
+  title_text <- sprintf("%s: %s vs %s", mvar, val, ref)
+
+  # Step 3: draw
+  p <- ggplot(df_plot, aes(x = lfc, y = feature, fill = direction)) +
+    geom_col(width = 0.6, color = "black") +
+    scale_fill_manual(
+      values = c("Positive LFC" = "darkslategray3", 
+                 "Negative LFC" = "coral"),
+      name = "Direction"
     ) +
-    theme_bw(base_size = 12) +
+    labs(
+      title = title_text,
+      x     = expression(Log[2]~fold~change),
+      y     = NULL
+    ) +
+    theme_bw(base_size = 8) +
     theme(
-      plot.title      = element_text(face = "bold", hjust = 0.5),
-      legend.position = "bottom"
+      plot.title       = element_text(face = "bold", hjust = 0.5),
+      axis.text.y      = element_text(face = "italic", size = 8),
+      axis.text.x      = element_text(size =  8),
+      legend.position  = "bottom",
+      plot.margin      = unit(c(0.8,0.8,0.8,0.8), "lines")
     )
 
-  print(p)
-  ggsave(
-    file.path(dif_dir, paste0("barplot_", var, ".pdf")),
-    p, width = 8, height = 6, units = "in", dpi = 300
-  )
+  return(p)
 }
 
-# Clean up
-rm(list = ls(all = TRUE))
+#  ================================================
+#  7) Loop over each (metadata,value) and save one plot
+#  ================================================
+#    We'll build a unique filename for each plot as “diffabund_<metadata>_<value>.png/pdf”.
+
+# Obtain the distinct (metadata,value) pairs in our topn list:
+combos <- topn_per_combo %>%
+  distinct(metadata, value) %>%
+  arrange(metadata, value)
+
+for(i in seq_len(nrow(combos))) {
+  mvar <- combos$metadata[i]
+  val  <- combos$value[i]
+
+  # Subset the top-10 table for exactly that metadata–value
+  df_subset <- topn_per_combo %>%
+    filter(metadata == mvar, value == val)
+
+  # If no rows, skip
+  if(nrow(df_subset) == 0) next
+
+  # Build the barplot
+  p <- make_barplot_for_combo(df_subset)
+
+  # Clean up “unsafe” characters in mvar/val for filenames:
+  mvar_clean <- str_replace_all(mvar, "[^A-Za-z0-9_]", "_")
+  val_clean  <- str_replace_all(val,  "[^A-Za-z0-9_\\.]", "_")
+
+  # Save PNG and PDF
+  pngfile <- file.path(out_dir, sprintf("diffabund_%s_%s.png", mvar_clean, val_clean))
+  pdffile <- file.path(out_dir, sprintf("diffabund_%s_%s.pdf", mvar_clean, val_clean))
+
+  ggsave(pngfile, plot = p, width = 6, height = 4, units = "in", dpi = 300)
+  ggsave(pdffile, plot = p, width = 6, height = 4, units = "in", dpi = 300)
+}
+
+# limpa ambiente
+rm(list=ls(all=TRUE))
+#  ================================================
+#  Done. Now you should see one bar‐plot per (metadata,value).
+#  ================================================
 ```
 
 # 5.0 PICRUSt2
 ## 5.1 Exporting the data
 The data is exported for PICRUSt2 algorithm analysis.
 ```{r exp_picrust2, eval=FALSE, echo=FALSE}
-path <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Profa.Ines_hemicell_2025/Hemicell_results_final'
+path <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Tasso_et_al_2025/Analysis'
 picrust2 = paste(path,"/Picrust2/",sep = "")
 dir.create(picrust2)
 
@@ -2137,7 +2787,7 @@ rm(list = ls(all = TRUE))
 # Carregue o dataset MetaCyc_pathway_map
 data("MetaCyc_pathway_map")
 
-path <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Profa.Ines_hemicell_2025/Hemicell_results_final'
+path <- '/home/local.hcpa.ufrgs.br/olovison/Projects/Tasso_et_al_2025/Analysis'
 picrust2_metacyc_maaslin = paste(path,"/Picrust2_metacyc_maaslin/",sep = "")
 dir.create(picrust2_metacyc_maaslin)
 
@@ -2145,7 +2795,7 @@ ps <- readRDS("ps1.dna.rds")
 
 # Carregue os dados de abundância funcional
 # Por exemplo, para dados de vias MetaCyc:
-metacyc_abundance <- read.table("/home/local.hcpa.ufrgs.br/olovison/Projects/Profa.Ines_hemicell_2025/Hemicell_results_final/path_abun_unstrat.tsv", header = TRUE, row.names = 1, sep = "\t")
+metacyc_abundance <- read.table("/home/local.hcpa.ufrgs.br/olovison/Projects/Tasso_et_al_2025/Analysis/path_abun_unstrat.tsv", header = TRUE, row.names = 1, sep = "\t")
 
 # Adicione uma coluna com os IDs das vias em cada df
 metacyc_abundance$pathway_id <- rownames(metacyc_abundance)
@@ -2186,8 +2836,8 @@ fit_data <- Maaslin2(
     input_metadata = metadata,
     output = picrust2_metacyc_maaslin,
     fixed_effects = c("Group", "Age", "Group_Age_interaction"),
-    random_effects = "Animal",
-    reference = c("Group,Control;Age,20;Group_Age_interaction,Control.20"),
+    random_effects = "PatientID",
+    reference = c("Group,452;Age,20;Group_Age_interaction,452.20"),
     normalization = "CLR",
     transform = "LOG",      # Transformação logarítmica
     analysis_method = "LM", # Modelo Linear
