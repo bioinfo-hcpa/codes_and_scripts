@@ -867,7 +867,7 @@ palette <- c(
   'Test group 2'     = 'orange'
 )
 
-# 5) Identifica top 10 Phyla por grupo
+# 5) Identifica top 5 Phyla por grupo
 Phylum.summary <- ps_ra_melt %>%
   group_by(Group, Phylum) %>%
   summarize(mean_abund = mean(Abundance), .groups = 'drop') %>%
@@ -875,7 +875,7 @@ Phylum.summary <- ps_ra_melt %>%
 
 top5 <- Phylum.summary %>%
   group_by(Group) %>%
-  slice_head(n = 5) %>%
+  head(n = 5) %>%
   pull(Phylum) %>%
   unique()
 
@@ -977,7 +977,7 @@ Family.summary <- ps_ra_melt %>%
 
 top10 <- Family.summary %>%
   group_by(Group) %>%
-  slice_head(n = 5) %>%
+  head(n = 10) %>%
   pull(Family) %>%
   unique()
 
@@ -1079,7 +1079,7 @@ Genus.summary <- ps_ra_melt %>%
 
 top10 <- Genus.summary %>%
   group_by(Group) %>%
-  slice_head(n = 5) %>%
+  head(n = 10) %>%
   pull(Genus) %>%
   unique()
 
