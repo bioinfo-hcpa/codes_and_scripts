@@ -385,8 +385,9 @@ taxa_plot <- function(ps_obj, level_col, top_n, fig_num) {
     group_by(.data[[real_col]]) %>%
     summarize(mean_abund = mean(Abundance), .groups = 'drop') %>%
     arrange(desc(mean_abund)) %>%
-    slice_head(n = top_n) %>%
-    pull(real_col)
+    pull(real_col) %>%
+    unique() %>%
+    head(n = 10)
   df_plot <- df %>%
     mutate(
       Taxa = as.character(.data[[real_col]]),
@@ -875,9 +876,9 @@ Phylum.summary <- ps_ra_melt %>%
 
 top5 <- Phylum.summary %>%
   group_by(Group) %>%
-  head(n = 5) %>%
   pull(Phylum) %>%
-  unique()
+  unique() %>%
+  head(n = 5)
 
 # 6) Filtra somente os top Phyla e calcula porcentagem
 df_plot <- ps_ra_melt %>%
@@ -977,9 +978,9 @@ Family.summary <- ps_ra_melt %>%
 
 top10 <- Family.summary %>%
   group_by(Group) %>%
-  head(n = 10) %>%
   pull(Family) %>%
-  unique()
+  unique() %>%
+  head(n = 10)
 
 # 6) Filtra somente os top family e calcula porcentagem
 df_plot <- ps_ra_melt %>%
@@ -1081,7 +1082,8 @@ top10 <- Genus.summary %>%
   group_by(Group) %>%
   head(n = 10) %>%
   pull(Genus) %>%
-  unique()
+  unique() %>%
+  head(n = 10)
 
 # 6) Filtra somente os top Genus e calcula porcentagem
 df_plot <- ps_ra_melt %>%
