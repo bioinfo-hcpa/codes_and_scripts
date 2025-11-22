@@ -977,9 +977,9 @@ Family.summary <- ps_ra_melt %>%
 
 top10 <- Family.summary %>%
   group_by(Group) %>%
-  head(n = 10) %>%
   pull(Family) %>%
-  unique()
+  unique() %>%
+  head(n = 10)
 
 # 6) Filtra somente os top family e calcula porcentagem
 df_plot <- ps_ra_melt %>%
@@ -1079,9 +1079,9 @@ Genus.summary <- ps_ra_melt %>%
 
 top10 <- Genus.summary %>%
   group_by(Group) %>%
-  head(n = 10) %>%
   pull(Genus) %>%
-  unique()
+  unique() %>%
+  head(n = 10)
 
 # 6) Filtra somente os top Genus e calcula porcentagem
 df_plot <- ps_ra_melt %>%
