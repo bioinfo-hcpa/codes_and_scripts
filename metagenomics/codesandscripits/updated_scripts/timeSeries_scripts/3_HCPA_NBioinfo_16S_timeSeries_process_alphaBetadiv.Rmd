@@ -1,0 +1,1300 @@
+---
+title: 'In this field, insert the project title'
+author: 'In this field, insert the author(s) of the analysis'
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 3
+    latex_engine: xelatex
+  word_document:
+    toc: yes
+    toc_depth: 5
+  html_document:
+    df_print: paged
+    theme: cerulean
+    highlight: haddock
+    toc: yes
+    toc_depth: 3
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+    code_folding: show
+always_allow_html: yes
+header-includes:
+  - \usepackage{float}
+  - \usepackage{placeins}           # \FloatBarrier
+  - \usepackage[font=small]{caption} # Legends
+---
+================================================================================
+# Study description:
+
+~ Include here a brief description of the study ~
+
+
+================================================================================
+
+# PROCESSING - ALPHA AND BETA DIVERSITY ANALYSIS IN TIME SERIES STUDIES
+
+Considerations about study structure:
+  Timepoints: Three distinct timepoints.
+  Animal: Not every animal has samples at all timepoints.
+
+Modeling
+  The ideal approach should account for:
+  Within-animal correlations over time (include a random effect for “Animal”).
+  Fixed effects for Timepoint and treatment group.
+  A random effect for Animal to capture the repeated-measures structure.
+  Fixed effects of Timepoint and Group to test how treatments differ over time.
+
+## 1. Load libraries
+```{r loadLibraries, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+
+## Load libraries
+library(gtsummary)
+library(writexl)
+library(dplyr)
+library(phyloseq)
+library(nlme)
+library(vegan)
+library(compositions)
+library(ggplot2)
+library(lme4)
+library(reshape2) 
+library(ade4)
+library(plotly)
+library(pracma) 
+library(fpc) 
+library(tidyverse)
+library(tidyr)
+library(cluster)
+library(RColorBrewer)
+library(ape)
+library(gplots)
+library(RColorBrewer)
+library(pheatmap)
+library(Maaslin2)
+library(ggpicrust2)
+library(microbiome)
+library(file2meco)
+library(microbiomeutilities)
+library(gridExtra)
+library(GGally)
+library(broom)
+library(broom.mixed)
+library(kableExtra)
+library(emmeans)
+library(cardx)
+library(tibble)
+library(knitr)
+library(sjPlot)
+library(sjmisc)
+library(dotwhisker)
+library(here)
+
+```
+
+## 2. Alpha diversity
+
+### 2.1. Shannon index - group comparison across timepoints
+```{r alpha_shannon, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4, fig.cap='Mean Shannon diversity over timepoint by group\n(Mean ± SE; ***/**/* indicates p<0.01/0.05/0.1)'}
+
+# Paths
+path      <- here::here()
+alpha_div <- file.path(path, "alpha_div")
+if(!dir.exists(alpha_div)) dir.create(alpha_div, recursive=TRUE)
+
+# Shannon index
+# ps1.rds is the phyloseq object in which ASVs were filtered based on prevalence and abundance. It is created in script #2.
+ps      <- readRDS("ps1.dna.rds")
+df.adiv <- cbind(
+  data.frame(sample_data(ps)),
+  estimate_richness(ps, measures="Shannon")
+)
+
+#===============================================================================================================================
+
+# Removing outliers, if necessary
+#ps.no <- prune_samples(sample_names(ps) != "HIDRO(10)5", ps)
+
+# If outliers are removed, remember to use the phyloseq object created below for further analysis
+#saveRDS(ps.no, file.path(path, 'ps1.no_outlier.rds'))
+
+#===============================================================================================================================
+
+# 2. Fit Shannon mixed‐effects model
+
+set.seed(123)
+
+model_shannon <- lme(
+  fixed       = Shannon ~ Timepoint * Group,
+  random      = ~ 1 | Animal,
+  correlation = corCAR1(form = ~ Timepoint | Animal),
+  data        = df.adiv,
+  method      = "REML",
+  control     = lmeControl(maxIter=100, msMaxIter=100, opt="optim")
+)
+
+# Contrast Groups within each Time Point
+emm_st <- emmeans(model_shannon, pairwise ~ Group | Timepoint, adjust="none")
+cts_st <- summary(emm_st$contrasts) |>
+  as_tibble() |>
+  separate(contrast, into=c("group2","group1"), sep=" - ") |>
+  rename(p.value = p.value)
+
+# Positions and labels
+pos_st <- df.adiv |> group_by(Timepoint) |> summarise(y_max = max(Shannon))
+annots_st <- cts_st |>
+  left_join(pos_st, by="Timepoint") |>
+  mutate(
+    y.position = y_max + 0.1,
+    label = case_when(
+      p.value < 0.01 ~ "***",
+      p.value < 0.05 ~ "**",
+      p.value < 0.1  ~ "*",
+      TRUE           ~ NA_character_
+    )
+  ) |>
+  filter(!is.na(label))
+
+# color palette definition
+palette <- c("steelblue",
+             "orange"
+             )
+# Boxplot
+F_box <- ggplot(df.adiv, aes(Group, Shannon, color=Group, fill=Group)) +
+  geom_boxplot(outlier.shape=NA) +
+  stat_summary(fun=median, geom="crossbar", width=0.6, fatten=2, color="black") +
+  scale_color_manual(values=palette, name="Group") +
+  scale_fill_manual(values=palette, name="Group") +
+  facet_wrap(~Timepoint, nrow=1) +
+  labs(
+    y       = "Shannon diversity index",
+    x       = NULL,
+    caption = "* p < 0.1; ** p < 0.05; *** p < 0.01"
+  ) +
+  theme_bw(base_size=11) +
+  theme(
+    legend.position  = "bottom",
+    axis.text.x      = element_blank(),
+    axis.ticks.x     = element_blank(),
+    plot.caption     = element_text(size = 9, hjust = 0.5, face = "italic")
+  ) +
+  stat_pvalue_manual(
+    data        = annots_st,
+    mapping     = aes(x=group1, xend=group2, y.position=y.position, label=label),
+    inherit.aes = FALSE,
+    tip.length  = 0.02
+  )
+
+print(F_box)
+
+# save
+ggsave(
+  file.path(alpha_div, "shannon_boxplot.pdf"),
+  plot  = F_box,
+  width = 6, height = 4, units = "in", dpi = 300
+)
+
+```
+\FloatBarrier
+
+### 2.2. Shannon index - temporal analysis
+```{r alpha_lineplot, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=8, fig.height=6,fig.cap='Mean Shannon diversity over timepoint by Group\n(Mean ± SE; interaction details)\n* p < 0.1; ** p < 0.05; *** p < 0.01; ns = not significant'}
+
+# Paths
+path      <- here::here()
+alpha_div <- file.path(path, "alpha_div")
+
+# Load data
+ps      <- readRDS("ps1.dna.rds")
+df.adiv <- data.frame(sample_data(ps)) %>%
+  mutate(
+    Timepoint       = as.numeric(Timepoint),
+    Group     = factor(Group),
+    Timepoint = factor(
+      case_when(
+        Timepoint == 1  ~ "TP1",
+        Timepoint == 2  ~ "TP2",
+        Timepoint == 3 ~ "TP3"
+      ),
+      levels = c("TP1","TP2","TP3")
+    )
+  ) %>%
+  bind_cols(estimate_richness(ps, measures = "Shannon")) %>%
+  filter(!is.na(Timepoint))
+
+# Summary: mean ± SE by Timepoint & Group
+df_sum <- df.adiv %>%
+  group_by(Timepoint, Group) %>%
+  summarise(
+    meanShannon = mean(Shannon),
+    seShannon   = sd(Shannon)/sqrt(n()),
+    .groups     = "drop"
+  )
+
+# Fit mixed model on Shannon ~ Timepoint * Group
+set.seed(123)
+
+model_shannon <- lme(
+  fixed       = Shannon ~ Timepoint * Group,
+  random      = ~ 1 | Animal,
+  correlation = corCAR1(form = ~ Timepoint | Animal),
+  data        = df.adiv,
+  method      = "REML",
+  control     = lmeControl(maxIter = 100, msMaxIter = 100, opt = "optim")
+)
+
+# Extract p-values & significance symbols
+sm        <- summary(model_shannon)$tTable
+p_tp2    <- sm["TimepointT2",                  "p-value"]
+p_tp3   <- sm["TimepointT3",                 "p-value"]
+p_group   <- sm["Group2",           "p-value"]
+p_int2   <- sm["TimepointT2:Group2",  "p-value"]
+p_int3  <- sm["TimepointT3:Group2", "p-value"]
+
+sym_tp2   <- ifelse(p_tp2  <0.01, "***",
+                 ifelse(p_tp2  <0.05, "**",
+                 ifelse(p_tp2  <0.10, "*","ns")))
+sym_tp3  <- ifelse(p_tp3 <0.01, "***",
+                 ifelse(p_tp3 <0.05, "**",
+                 ifelse(p_tp3 <0.10, "*","ns")))
+sym_group  <- ifelse(p_group <0.01, "***",
+                 ifelse(p_group <0.05, "**",
+                 ifelse(p_group <0.10, "*","ns")))
+sym_int2  <- ifelse(p_int2 <0.01, "***",
+                 ifelse(p_int2 <0.05, "**",
+                 ifelse(p_int2 <0.10, "*","ns")))
+sym_int3 <- ifelse(p_int3<0.01, "***",
+                 ifelse(p_int3<0.05, "**",
+                 ifelse(p_int3<0.10, "*","ns")))
+
+# Pairwise contrasts for Timepoint
+emm_tp <- emmeans(model_shannon, pairwise ~ Timepoint, adjust="none")
+cts_tp <- summary(emm_tp$contrasts) %>%
+  as_tibble() %>%
+  separate(contrast, into = c("group2","group1"), sep = " - ") %>%
+  rename(p.value = p.value) %>%
+  mutate(
+    y.position = max(df_sum$meanShannon + df_sum$seShannon) + seq(0.1, by=0.1, length.out = n()),
+    label = case_when(
+      p.value < 0.01 ~ "***",
+      p.value < 0.05 ~ "**",
+      p.value < 0.10 ~ "*",
+      TRUE           ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(label))
+
+# Build subtitle text
+subtitle_text <- sprintf(
+  "Interactions—T2×Group: %s (p=%.3g), T3×Group: %s (p=%.3g)",
+  sym_tp2,   p_tp2,
+  sym_tp3,  p_tp3,
+  sym_group,  p_group,
+  sym_int2,  p_int2,
+  sym_int3, p_int3
+)
+
+# color palette definition 
+palette <- c("steelblue","orange")
+
+# plot
+F_line <- ggplot(df_sum, aes(x = Timepoint, y = meanShannon, color = Group, group = Group)) +
+  geom_line(size = 1) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = meanShannon - seShannon,
+                    ymax = meanShannon + seShannon),
+                width = 0.1) +
+  scale_color_manual(values = palette, name = "Group") +
+  labs(
+    title    = "Mean Shannon diversity over timepoint by group",
+    subtitle = subtitle_text,
+    x        = "Timepoint",
+    y        = "Mean Shannon ± SE",
+    caption  = "* p < 0.1; ** p < 0.05; *** p < 0.01; ns = not significant"
+  ) +
+  stat_pvalue_manual(
+    data        = cts_tp,
+    mapping     = aes(x = group1, xend = group2, y.position = y.position, label = label),
+    inherit.aes = FALSE,
+    tip.length  = 0.02
+  ) +
+  theme_bw(base_size = 10) +
+  theme(
+    legend.position = "bottom",
+    plot.title      = element_text(hjust = 0.5),
+    plot.subtitle   = element_text(hjust = 0.5),
+    plot.caption    = element_text(size = 9, hjust = 0.5, face = "italic")
+  )
+
+print(F_line)
+
+# Save
+ggsave(
+  filename = file.path(alpha_div, "shannon_lineplot.pdf"),
+  plot     = F_line,
+  width    = 8, height = 6, units = "in", dpi = 300
+)
+
+```
+\FloatBarrier
+
+### 2.3. Shannon index - Linear Mixed-effects model 
+
+Model description:
+
+A linear mixed-effects model was fitted to evaluate the effects of Timepoint, Group, and their interaction on Shannon diversity. The model included fixed effects for Timepoint, Group, and Timepoint × Group interaction, a random intercept for Animal, and a continuous AR(1) correlation structure to account for within-animal temporal autocorrelation. Estimates are presented with standard errors (SE), t-values, and p-values.
+```{r alpha_lme, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+
+set.seed(123)
+
+# Extract table of fixed effects and IC (only "fixed")
+sm <- summary(model_shannon)$tTable
+ci <- intervals(model_shannon, level = 0.95, which = "fixed")$fixed
+
+tbl_shannon <- sm %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "term") %>%
+  rename(
+    Estimate     = Value,
+    `Std. Error` = Std.Error,
+    DF           = DF,
+    t.value      = `t-value`,
+    `p-value`    = `p-value`
+  ) %>%
+  mutate(
+    `CI Lower` = ci[term, "lower"],
+    `CI Upper` = ci[term, "upper"]
+  )
+
+#tbl_shannon
+
+# Export to excel
+FileName <- paste(alpha_div,"/Shannon model.xlsx", sep = "")
+write_xlsx(tbl_shannon, FileName)
+
+# table kable format
+tbl_shannon %>%
+  select(term, Estimate, `Std. Error`, DF, t.value, `p-value`, `CI Lower`, `CI Upper`) %>%
+  kable(
+    caption  = "Fixed effects of the mixed-effects model for Shannon.",
+    digits   = 3,
+    booktabs = TRUE
+  ) %>%
+  kable_styling(
+    full_width    = FALSE,
+    position      = "center",
+    latex_options = c("scale_down", "hold_position")
+  ) %>%
+  footnote(
+    general       = "LME model with a continuous-time autoregressive correlation structure of order 1 for animal/group.",
+    general_title = ""
+  )
+
+# clean environment
+#rm(list = ls(all = TRUE))
+
+```
+\FloatBarrier
+
+Results interpretation:
+
+Intercept (baseline – grupo de referência)
+(Intercept) = (Insert value) (SE = (Insert value)), t(DF value) = (Insert value), p < (Insert value)
+This is the predicted Shannon diversity index at the reference levels—i.e., at Baseline for the reference group (Group1 - control). The baseline diversity is about (Insert value), and this result is highly significant, reflecting the strong relationship between timepoint T1 and baseline diversity.
+
+Timepoint_T2 = (Insert value) (SE = (Insert value)), t(DF) = (Insert value), p =(Insert value)
+This coefficient represents the change in Shannon diversity at T2 compared to (Baseline) within the reference group. The positive/negative estimate (Insert value) indicates a significant / non-significant increase/decrease in diversity (p = (Insert value)), suggesting a substantial/modest ascent/decline in Shannon diversity at this timepoint. Accordingly, we can/cannot infer a statistically significant difference in diversity between T1 and T2 for the reference group.
+
+Timepoint_T3 = (Insert value) (SE = (Insert value)), t(DF) = (Insert value), p = (Insert value)
+This coefficient represents the change in Shannon diversity at T3 compared to (Baseline) within the reference group. The positive/negative estimate (Insert value) indicates a significant / non-significant increase/decrease in diversity (p = (Insert value)), suggesting a substantial/modest ascent/decline in Shannon diversity at this timepoint. Accordingly, we can/cannot infer a statistically significant difference in diversity between T1 and T3 for the reference group.
+
+Group2 = (Insert value) (SE = (Insert value)), t(DF) = (Insert value), p = (Insert value)
+This coefficient represents the difference in baseline Shannon diversity at T1 between the Group2 and the reference group. A positive/negative estimate ((Insert value)) indicates higher/lower baseline diversity in Group2 relative to the reference group. This difference is statistically significant / not statistically significant (p = (Insert value)), indicating the presence/absence of a statistically meaningful baseline difference in Shannon diversity between groups.
+
+T2:Group2 = (Insert value) (SE = (Insert value)), t(DF) = (Insert value), p = (Insert value)
+This interaction term represents how the change in Shannon diversity from Baseline to T2 differs between Group2 and the reference group. A positive/negative estimate ((Insert value)) indicates that the change over time in Group2 is greater/smaller (i.e., a relative increase/decrease) compared to the reference group at T2. This interaction effect is statistically significant / not statistically significant (p = (Insert value)), indicating the presence/absence of a statistically meaningful difference in temporal change between groups at this timepoint.
+
+T3:Group2 = (Insert value) (SE = (Insert value)), t(DF) = (Insert value), p = (Insert value)
+This interaction term reflects how the change in Shannon diversity from baseline to T3 differs between Group2 and the reference group. A positive/negative estimate ((Insert value)) indicates that Group2 exhibits a greater/smaller increase/decrease in diversity over time relative to the reference group at T3. This interaction is statistically significant / not statistically significant (p = (Insert value)), suggesting the presence/absence of a statistically meaningful difference in longitudinal diversity trajectories between groups at this timepoint.
+
+Results - compact version:
+A linear mixed-effects model revealed that (Insert key finding). At baseline, (Insert baseline interpretation). Over time, (Insert time effect interpretation). No significant/significant differences were observed between groups at baseline (p = (Insert value)). The Time × Group interaction was significant/not significant (p = (Insert value)), indicating the presence/absence of differential longitudinal trajectories between groups. The model accounted for between-animal variability (SD = (Insert value)) and demonstrated (low/moderate/high) within-animal autocorrelation (AR = (Insert value)).
+
+Legend:
+SE - Standard Error of the mean
+DF - Degrees of freedom
+p - p valor
+SD - Standard Deviation
+AR - Autocorrelation
+
+\FloatBarrier
+
+### 2.3.1. Residual diagnostics
+```{r alpha_residuals, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Residual normality of the shannon model
+residuals <- residuals(model_shannon)
+
+# Shapiro-Wilk Test (Residual normality)
+shapiro.test(residuals)
+
+# INFO: The p-value returned by the test indicates whether the residuals follow a normal distribution. If the p-value is greater than 0.05, you do not reject the null hypothesis that the residuals are normally distributed, which is good for the model. If the p-value is less than 0.05, the residuals do not follow a normal distribution, which can be a problem and may require transformations to the data (logarithmic, square root, or Box-Cox) or the use of non-parametric models such as Generalized Additive Models (GAMs), Robust Regression Models, or Generalized Regression Models (GLMMs).
+
+```
+Residual diagnostics indicated no substantial deviation from normality, supporting the adequacy of the model assumptions.
+
+\FloatBarrier
+
+### 2.3.2. Confidence Intervals of Model Coefficients
+```{r alpha_ci, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Paths
+path      <- here::here()
+alpha_div <- file.path(path, "alpha_div")
+
+# CI graphs 
+plot_ci <- dwplot(model_shannon) +
+  theme_minimal() +
+  labs(title = "",
+       x = "Coefficient", y = "Terms")
+
+# save
+ggsave(filename = file.path(alpha_div, "CI_model_shannon_plot.png"), plot = plot_ci, width = 8, height = 6, dpi = 300)
+
+# Graphs interpretation:
+# X-axis: indicates the estimated coefficients for the model variables, which may include fixed and random effects.
+# Each bar represents the confidence interval for a coefficient. The center of the bar is the estimated value of the coefficient.
+# The length of the bar indicates the precision of the estimate: shorter intervals indicate greater precision, while longer intervals suggest greater uncertainty in the coefficient estimate.
+
+# Interpretation of Intervals:
+# Intersection with the Zero Axis: If the confidence interval of a coefficient includes zero, this suggests that the variable does not have a statistically significant effect on the dependent variable. This means that there is not enough evidence to state that this variable is associated with the dependent variable at the desired level of significance.
+# If the confidence interval does not include zero, this suggests that the variable is statistically significant and has an effect on the dependent variable.
+
+```
+\FloatBarrier
+
+### 2.3.3. Predicted marginal effects for Shannon index
+```{r alpha_predict, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Paths
+path      <- here::here()
+alpha_div <- file.path(path, "alpha_div")
+
+# Predicted marginal effects plots
+plot_prediEf <- plot_model(model_shannon, type = "pred", terms = c("Timepoint", "Group")) +
+  theme_minimal() +
+  labs(title = "", 
+       x = "Timepoint", 
+       y = "Shannon Index", 
+       color = "Group")
+
+# save
+ggsave(filename = file.path(alpha_div, "CI_model_shannon_plot.png"), 
+       plot = plot_prediEf, width = 8, height = 6, dpi = 300
+       )
+
+```
+\FloatBarrier
+
+### 2.3.4. Temporal Autocorrelation for alpha diversity
+
+An additional mixed-effects model was fitted to quantify between-animal variability, residual variance, and the strength of temporal autocorrelation in Shannon diversity.
+
+Between-animal variability (random intercept standard deviation) indicates how much animals differ on average from each other, after accounting for Timepoint and Group.
+
+Residual variability reflects all the remaining variation within animals over time that the model can't explain (e.g., biological fluctuations, noise).
+
+AR(1) parameter shows the correlation of successive measurements within the same animal.
+
+```{r alpha_autocorrelation, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4, fig.cap='Mean Shannon diversity over timepoint by group\n(Mean ± SE; ***/**/* indicates p<0.01/0.05/0.1)'}
+
+# Paths
+path      <- here::here()
+alpha_div <- file.path(path, 'alpha_div')
+
+# Adjusting the mixed model for autocorrelation - Includes random intercept by Animal and AR(1) correlation
+set.seed(123)
+
+# Shannon vs Time
+adiv_df <- sample_data(ps) %>%
+  as("data.frame") %>%
+  mutate(
+    Timepoint    = as.numeric(Timepoint),
+    Group  = factor(Group),
+    Animal = factor(Animal)
+  ) %>%
+  bind_cols(estimate_richness(ps, measures = "Shannon"))
+
+p3 <- ggplot(adiv_df, aes(x = Timepoint, y = Shannon, group = Animal, color = Group)) +
+  geom_line(alpha = 0.5) +
+  geom_point(size = 2) +
+  scale_color_manual(values=palette, name="Group") +
+  scale_fill_manual(values=palette, name="Group") +
+  labs(
+    x = "Timepoint",
+    y = "Shannon index",
+    title = "Shannon index dynamics over Timepoint"
+  ) +
+  theme_bw(base_size = 12)
+ggsave(file.path(autocorr, "shannon_spaghetti.pdf"), p3,
+       width = 6, height = 4, units = "in", dpi = 300)
+
+p3
+
+# Mixed‐effects models for autocorrelation
+# NA filtering
+adiv_df2 <- filter(adiv_df, !is.na(Timepoint) & !is.na(Group) & !is.na(Shannon))
+
+model_shannon <- lme(Shannon ~ Timepoint * Group,
+                     random      = ~1 | Animal,
+                     correlation = corCAR1(form = ~Timepoint | Animal),
+                     data        = adiv_df2,
+                     method      = "REML")
+
+#display summary table
+cat("\n### Model for Shannon\n")
+kable(broom::tidy(model_shannon), digits = 3)
+
+##########################################################################3
+
+# Visual interpretation of AR(1) and variability
+
+# Between-animal SD: how different animals are after
+# controlling for Time and Group
+# Residuals: unexplained variation within the same animal
+# AR(1): correlation between consecutive measurements within the same animal
+
+```
+\FloatBarrier
+
+Model for Shannon index
+Fitted similarly on the Shannon diversity:
+
+Random effects show between-animal variability (σ ≈ Insert value) and residual variability (σ ≈ Insert value). The AR(1) parameter (φ ≈ Insert value) indicates substantial within-animal autocorrelation of Shannon diversity over time.
+
+Total of 41 observations across 16 animals.
+
+## 3. Beta diversity
+### 3.1. Clustering - Techniques for dimensionality reduction and data visualization
+### 3.1.1. PCoA (Principal Coordinate Analysis) Jaccard and Aitchison distances
+```{r beta_div_ordination, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Paths
+path       <- here:here()
+beta_div <- file.path(path, "beta_div")
+dir.create(beta_div, showWarnings = FALSE, recursive = TRUE)
+Clustering <- file.path(beta_div, "Clustering")
+dir.create(Clustering, showWarnings = FALSE, recursive = TRUE)
+
+# Load phyloseq + metadata
+ps <- readRDS("ps1.dna.rds")
+# ps1.rds is the phyloseq object in which ASVs were filtered based on prevalence and abundance. It is created in script #2.
+
+# Build abundance df
+seq_counts <- as.data.frame(t(otu_table(ps)))
+
+# Palette & shapes for Group × Timepoint
+palette        <- c(PF = "steelblue", `DFI` = "orange")
+shapes         <- c(D20 = 21, D25 = 22, D103 = 24)
+ellipse_colors <- c(
+  "PF:D20"        = "lightblue1",
+  "PF:D25"        = "steelblue3",
+  "PF:D103"       = "darkblue",
+  "DFI:D20" = "moccasin",
+  "DFI:D25" = "orange1",
+  "DFI:D103"= "orange4"
+)
+
+# Metadata
+meta <- sample_data(ps) %>%
+  as("data.frame") %>%
+  mutate(
+    Timepoint       = as.numeric(Timepoint),
+    Timepoint = factor(paste0("TP", Timepoint), levels = c("TP1","TP2","TP3")),
+    Group     = factor(Group, levels = names(palette)),
+    GroupTP   = interaction(Group, Timepoint, sep=":")
+  )
+
+```
+
+```{r beta_div_ordination_pcoa, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4, fig.cap= 'PCoA (Jaccard) by group'}
+
+# PCoA Jaccard
+jac_dmat <- vegdist(t(seq_counts), method="jaccard")
+pcoa_jac <- ape::pcoa(jac_dmat)
+jac_vars <- pcoa_jac$values$Relative_eig
+df_pcoa  <- data.frame(Axis.1 = pcoa_jac$vectors[,1],
+                       Axis.2 = pcoa_jac$vectors[,2],
+                       meta)
+
+# PCoA plot
+p_pcoa <- ggplot(df_pcoa, aes(Axis.1, Axis.2)) +
+  stat_ellipse(aes(color = GroupTP, group = GroupTP),
+               geom = "path", size = 1, level = 0.95) +
+  geom_path(aes(group = SampleID), color = "gray70", alpha = 0.6) +
+  geom_point(aes(shape = Timepoint, fill = Group), size = 3, color = "black") +
+  scale_color_manual(values = ellipse_colors, name = "Group:Timepoint") +
+  scale_fill_manual(values = palette,          name = "Group") +
+  scale_shape_manual(values = shapes,          name = "Timepoint") +
+  
+  #coord_fixed(ratio = jac_vars[2]/jac_vars[1]) +  # optional function
+  
+  labs(
+    title = "PCoA (Jaccard)",
+    x     = paste0("Axis 1 (", round(jac_vars[1]*100,1), "%)"),
+    y     = paste0("Axis 2 (", round(jac_vars[2]*100,1), "%)")
+  ) +
+  my_theme
+
+print(p_pcoa)
+
+# save
+ggsave(file.path(Clustering, "pcoa_jaccard_trajectory_ellipses.pdf"), p_pcoa)
+write_xlsx(df_pcoa, file.path(Clustering, "pcoa_jaccard_trajectory_scores.xlsx"))
+
+```
+
+```{r beta_div_ordination_pcoaAitch, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4, fig.cap= 'PCoA (Aitchison) by group'}
+
+# PCoA Aitchison
+set.seed(123) # Always run 
+
+# Build abundance df
+seq_counts <- as.data.frame(t(otu_table(ps)))
+
+seq_counts_noZero <- zCompositions::cmultRepl(seq_counts) # method Count Zero Multiplicative-CZM
+
+# PCoA Aitchison's Euclidean
+aitch_dmat <- vegan::vegdist(t(seq_counts_noZero), method = "aitchison")
+pcoaAitch_res <- ape::pcoa(aitch_dmat)
+jvar <- pcoaAitch_res$values$Relative_eig
+
+df_pcoaAitch <- data.frame(
+  Axis.1 = pcoaAitch_res$vectors[,1],
+  Axis.2 = pcoaAitch_res$vectors[,2],
+  meta
+)
+
+# PCoA plot Aitchison (time series)
+p_pcoa_Aitch <- ggplot(df_pcoaAitch, aes(Axis.1, Axis.2)) +
+
+  stat_ellipse(aes(color = GroupTP, group = GroupTP),
+               geom = "path", size = 1, level = 0.95) +
+
+  geom_path(aes(group = SampleID),
+            color = "gray70", alpha = 0.6) +
+
+  geom_point(aes(shape = Timepoint, fill = Group),
+             size = 3, color = "black") +
+
+  scale_color_manual(values = ellipse_colors, name = "Group:Timepoint") +
+  scale_fill_manual(values = palette, name = "Group") +
+  scale_shape_manual(values = shapes, name = "Timepoint") +
+
+  # coord_fixed(ratio = jvar[2]/jvar[1]) + # optional function
+
+    labs(
+    title = "PCoA - Aitchison's Euclidean distance",
+    x = paste0("Axis 1 (", round(jvar[1]*100,1), "%)"),
+    y = paste0("Axis 2 (", round(jvar[2]*100,1), "%)")
+  ) +
+
+  theme_bw(base_size = 8) +
+  theme(legend.position = "right")
+
+p_pcoa_Aitch
+
+
+# Save
+ggsave(file.path(Clustering, "pcoa_aitchison_trajectory.pdf"),
+       p_pcoa_Aitch, width = 180, height = 120, units = "mm", dpi = 300)
+
+write_xlsx(df_pcoaAitch, file.path(Clustering, "pcoa_aitchison_trajectory_scores.xlsx"))
+
+
+```
+
+### 3.1.2. NMDS (Non-Metric Multidimensional Scaling) Jaccard and Aitchison distances
+```{r beta_div_ordination_nmds_jac, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4, fig.cap= 'NMDS - Jaccard distance'}
+
+# NMDS - Jaccard distance  
+set.seed(123) # Always run before NMDS
+
+jac_nmds  <- metaMDS(jac_dmat, k=2, autotransform=FALSE, trymax=100)
+
+df_jac_nd <- data.frame(MDS1 = jac_nmds$points[,1],
+                        MDS2 = jac_nmds$points[,2],
+                        meta)
+
+# plot NMDS Jaccard
+p_nmds_jac <- ggplot(df_jac_nd, aes(MDS1, MDS2)) +
+  stat_ellipse(aes(color = GroupTP, group = GroupTP),
+               geom = "path", size = 1, level = 0.95) +
+  geom_path(aes(group = SampleID), color = "gray70", alpha = 0.6) +
+  geom_point(aes(shape = Timepoint, fill = Group), size = 3, color = "black") +
+  scale_color_manual(values = ellipse_colors, name = "Group:Timepoint") +
+  scale_fill_manual(values = palette,          name = "Group") +
+  scale_shape_manual(values = shapes,          name = "Timepoint") +
+  labs(title = paste0("NMDS (Jaccard), stress=", round(jac_nmds$stress,3))) +
+  my_theme
+
+print(p_nmds_jac) # display
+
+# Saving NMDS_jac
+ggsave(file.path(Clustering, "nmds_jaccard_trajectory_ellipses.pdf"), p_nmds_jac)
+write_xlsx(df_jac_nd, file.path(Clustering, "nmds_jaccard_trajectory_scores.xlsx"))
+
+```
+
+```{r beta_div_ordination_nmds_ait, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4, fig.cap= 'NMDS - Aitchison distance'}
+
+# NMDS Aitchison's Euclidean distance
+set.seed(123) # Always run before NMDS
+
+euc_nmds  <- metaMDS(aitch_dmat,   k=2, autotransform=FALSE, trymax=100)
+df_euc_nd <- data.frame(MDS1 = euc_nmds$points[,1],
+                        MDS2 = euc_nmds$points[,2],
+                        meta)
+
+# Plot NMDS Aitchison's Euclidean
+p_nmds_euc <- ggplot(df_euc_nd, aes(MDS1, MDS2)) +
+  stat_ellipse(aes(color = GroupTP, group = GroupTP),
+               geom = "path", size = 1, level = 0.95) +
+  geom_path(aes(group = SampleID), color = "gray70", alpha = 0.6) +
+  geom_point(aes(shape = Timepoint, fill = Group), size = 3, color = "black") +
+  scale_color_manual(values = ellipse_colors, name = "Group:Timepoint") +
+  scale_fill_manual(values = palette,          name = "Group") +
+  scale_shape_manual(values = shapes,          name = "Timepoint") +
+  labs(title = paste0("NMDS (Aitchison), stress=", round(euc_nmds$stress,3))) +
+  my_theme
+
+print(p_nmds_euc) # display
+
+# save
+ggsave(file.path(Clustering, "nmds_aitchison_trajectory_ellipses.pdf"), p_nmds_euc)
+write_xlsx(df_euc_nd, file.path(Clustering, "nmds_aitchison_trajectory_scores.xlsx"))
+
+```
+To corroborate the previous findings, we will perform an hierarchical clustering.
+
+### 3.1.3. Hierarchical clustering - Jaccard distance
+```{r hclust_jac, eval=T, echo=F, fig.align='center', fig.width=6, fig.height=4, fig.cap= 'Jaccard hierarchical agglomerative clustering'}
+
+cluster_ex <- hclust(vegdist(t(seq_counts_noZero),method='jaccard'),method="complete")
+print(cluster_ex) # display
+
+# save
+png(paste0(Clustering, "/cluster_dendrogram_jaccard.png"), width = 800, height = 600)
+plot(cluster_ex,main = 'Jaccard Hierarchical Agglomerative Clustering', xlab='', sub='')
+dev.off()
+
+```
+\FloatBarrier
+
+## 4. Beta diversity and statistical tests
+
+### 4.1. Beta dispersion 
+Homogeneity of multivariate dispersion among groups was tested using betadisper prior to PERMANOVA.
+```{r beta_div_stat1, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+
+# β-dispersion: homogeneity of group variances
+stats_test.dir <- file.path(beta_div, "stats_test")
+dir.create(stats_test.dir, showWarnings = FALSE, recursive = TRUE)
+
+# 1) Test homogeneity of dispersion
+set.seed(123) # Always run this line before betadisper()
+
+bd_ait   <- betadisper(aitch_dmat, meta$Group)
+bd_jac   <- betadisper(jac_dmat, meta$Group)
+disp_ait <- anova(bd_ait)
+disp_jac <- anova(bd_jac)
+
+# Print summary
+disp_table <- data.frame(
+  Distance = c("Aitchison", "Jaccard"),
+  F.value  = c(disp_ait$F[1],  disp_jac$F[1]),
+  P.value  = c(disp_ait$Pr[1], disp_jac$Pr[1])
+)
+
+# original console output (now commented out):
+# print(disp_table)
+# print(disp_ait)
+# print(disp_jac)
+
+# Format table for printing
+disp_table %>%
+  knitr::kable(
+    digits  = 3,
+    caption = "Test for homogeneity of dispersion (betadisper)"
+  ) %>%
+  kableExtra::kable_styling(latex_options = c("hold_position","scale_down"))
+
+```
+
+### 4.2. PERMANOVA - Temporal effect
+```{r beta_permanovaTemp, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Output
+stats_test.dir <- file.path(beta_div, "stats_test")
+
+# PERMANOVA - Prepare permutation schemes 
+set.seed(123)
+
+perm_block    <- how(nperm = 999, blocks = meta$Animal)
+perm_free     <- how(nperm = 999)
+
+# PERMANOVA: Temporal effect (within-animal)
+perm_ait_tp <- adonis2(aitch_dmat ~ Timepoint, data = meta, permutations = perm_block)
+perm_jac_tp <- adonis2(jac_dmat ~ Timepoint, data = meta, permutations = perm_block)
+
+# original console output (now commented out):
+#cat("\nPERMANOVA: Timepoint effect\n"); print(perm_ait_tp); print(perm_jac_tp)
+
+# Format table for printing
+broom::tidy(perm_ait_tp) %>%
+  knitr::kable(
+    digits  = 3,
+    caption = "PERMANOVA (Aitchison) – Temporal effect"
+  ) %>%
+  kableExtra::kable_styling(latex_options = c("hold_position","scale_down"))
+
+broom::tidy(perm_jac_tp) %>%
+  knitr::kable(
+    digits  = 3,
+    caption = "PERMANOVA (Jaccard) – Temporal effect"
+  ) %>%
+  kableExtra::kable_styling(latex_options = c("hold_position","scale_down"))
+
+```
+
+### 4.3. PERMANOVA - Group effect
+```{r beta_permanovaGroup, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Output
+stats_test.dir <- file.path(beta_div, "stats_test")
+
+# PERMANOVA: Group effect (between‐subjects)
+perm_ait_grp <- adonis2(aitch_dmat ~ Group, data = meta, permutations = perm_free)
+perm_jac_grp <- adonis2(jac_dmat ~ Group, data = meta, permutations = perm_free)
+
+# original console output (now commented out):
+#cat("\nPERMANOVA: Group effect\n");     print(perm_ait_grp); print(perm_jac_grp)
+
+# Format table for printing
+broom::tidy(perm_ait_grp) %>%
+  knitr::kable(
+    digits  = 3,
+    caption = "PERMANOVA (Aitchison) – Group effect"
+  ) %>%
+  kableExtra::kable_styling(latex_options = c("hold_position","scale_down"))
+
+broom::tidy(perm_jac_grp) %>%
+  knitr::kable(
+    digits  = 3,
+    caption = "PERMANOVA (Jaccard) – Group effect"
+  ) %>%
+  kableExtra::kable_styling(latex_options = c("hold_position","scale_down"))
+
+```
+The PERMANOVA presented statistically significant for Timepoint on both distance metrics, but not significant for the Group variable.
+
+### 4.4. PERMANOVA -  Time x Group Interaction
+```{r beta_permanovaInteract, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Set up block‐permutations for repeated measures
+set.seed(123)
+
+perm_block <- how(nperm = 999, blocks = meta$Animal)
+
+# PERMANOVA with Group × Timepoint interaction
+perm_int_tp <- adonis2(
+  aitch_dmat ~ Group * Timepoint,
+  data         = meta,
+  permutations = perm_block,
+  by           = "margin" #Teste PFado por todos os termos, inclusive pela interação
+)
+
+# Original console output (commented out):
+#cat("\n## PERMANOVA: interaction Group × Age\n")
+#print(perm_int_age)
+
+# Format table for printing
+broom::tidy(perm_int_tp) %>%
+  knitr::kable(
+    digits  = 3,
+    caption = "PERMANOVA: interaction Group × Timepoint"
+  ) %>%
+  kableExtra::kable_styling(
+    latex_options = c("hold_position", "scale_down")
+  )
+
+```
+The PERMANOVA was not significant for the interaction between Group and Timepoint.
+
+## 5. Linear Mixed-effects models for beta diversity
+```{r beta_model, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Modelo misto com intercepto
+
+# Se você acredita que diferentes pacientes podem ter trajetórias diferentes ao longo do tempo, modele (Tempo | ID do paciente (não da amostra))
+
+# Se você acredita que somente o paciente é um efeito aleatório, mas que os pacientes vão variar igualmente ao longo do tempo dentro do eu grupo amostral, modele (1 | ID do paciente)
+
+# Modelo linear misto para o primeiro componente principal (PC1)
+
+# pcoa_df já existem do chunk anterior, com colunas:
+# Axis.1, Axis.2, Group, Age (numérico), Animal
+
+#============================================================================================================================
+
+# LME para Axis.1 (Jaccard PCoA)
+set.seed(123)
+
+df_pcoa$Timepoint <- as.numeric(df_pcoa$Timepoint)
+
+model_A1 <- lme(
+  fixed       = Axis.1 ~ Group * Timepoint,
+  random      = ~ 1 | Animal,
+  correlation = corCAR1(form = ~ Timepoint | Animal),
+  data        = df_pcoa,
+  method      = "REML",
+  control     = lmeControl(maxIter=100, msMaxIter=100, opt="optim")
+)
+
+summary(model_A1)
+
+# LME para Axis.2 (Jaccard PCoA)
+model_A2 <- lme(
+  fixed       = Axis.2 ~ Group * Timepoint,
+  random      = ~ 1 | Animal,
+  correlation = corCAR1(form = ~ Timepoint | Animal),
+  data        = df_pcoa,
+  method      = "REML",
+  control     = lmeControl(maxIter=100, msMaxIter=100, opt="optim")
+)
+
+#summary(model_A2)
+
+# LME para Axis.1 (PCoA Aitchison)
+set.seed(123)
+
+df_pcoaAitch$Timepoint <- as.numeric(df_pcoaAitch$Timepoint)
+
+model_Aitch_A1 <- lme(
+  fixed       = Axis.1 ~ Group * Timepoint,
+  random      = ~ 1 | Animal,
+  correlation = corCAR1(form = ~ Timepoint | Animal),
+  data        = df_pcoaAitch,
+  method      = "REML",
+  control     = lmeControl(maxIter=100, msMaxIter=100, opt="optim")
+)
+
+summary(model_Aitch_A1)
+
+# LME para Axis.2 (PCoA Aitchison)
+model_Aitch_A2 <- lme(
+  fixed       = Axis.2 ~ Group * Timepoint,
+  random      = ~ 1 | Animal,
+  correlation = corCAR1(form = ~ Timepoint | Animal),
+  data        = df_pcoaAitch,
+  method      = "REML",
+  control     = lmeControl(maxIter=100, msMaxIter=100, opt="optim")
+)
+
+summary(model_Aitch_A2)
+
+# Helper function to format and print LME model summaries
+print_lme_table <- function(model, model_name) {
+  # Summary object
+  sm <- summary(model)
+
+  # 1) Fixed effects
+  fe <- as.data.frame(sm$tTable)
+  fe$Term <- rownames(fe)
+  fe <- fe %>%
+    select(Term, everything()) %>%
+    rename_with(~ c("Estimate", "Std. Error", "DF", "t value", "p value"), .cols = 2:6)
+
+  cat("## ", model_name, " - Fixed Effects\n")
+  print(
+    fe %>%
+      kable(
+        caption = paste(model_name, "- Fixed Effects"),
+        digits  = 3,
+        booktabs = TRUE
+      ) %>%
+      kable_styling(
+        latex_options = c("hold_position", "scale_down")
+      )
+  )
+
+  # 2) Random effects variance (Animal intercept)
+  vc <- as.data.frame(VarCorr(model), stringsAsFactors = FALSE)
+  vc <- vc[vc$grp == "Animal" & vc$var1 == "(Intercept)", ]
+  re_df <- data.frame(
+    Group    = vc$grp,
+    Variance = vc$sdcor^2
+  )
+
+  cat("\n")
+  print(
+    re_df %>%
+      kable(
+        caption = paste(model_name, "- Random Effects Variance"),
+        digits  = 3,
+        booktabs = TRUE
+      ) %>%
+      kable_styling(
+        latex_options = c("hold_position", "scale_down")
+      )
+  )
+
+  # 3) Correlation parameter (Phi)
+  phi <- coef(model$modelStruct$corStruct, unconstrained = FALSE)
+  cat("\n**Correlation (Phi):** ", round(phi, 3), "\n\n")
+}
+
+# Print tables for each LME model
+print_lme_table(model_A1, "Axis.1 (Jaccard PCoA)")
+print_lme_table(model_A2, "Axis.2 (Jaccard PCoA)")
+print_lme_table(model_Aitch_A1, "Axis.1 (Aitchison PCoA)")
+print_lme_table(model_Aitch_A2, "Axis.2 (Aitchison PCoA)")
+
+# clean environment
+#rm(list = ls(all = TRUE))
+
+```
+
+Axis-based models (ordination scores)
+
+1. Axis 1 (Jaccard PCoA) model
+
+Random effects
+
+* Between-animal variability: SD ≈ (Insert value)
+* Residual SD ≈ (Insert value)
+* Temporal autocorrelation: φ = (Insert value), indicating (weak/moderate/strong) within-animal temporal correlation.
+
+Fixed effects
+
+* Intercept (baseline/reference group):
+* (Insert value), p = (Insert value)
+
+Time effect:
+* Time = (Insert value) per unit time, p = (Insert value), indicating a significant/non-significant temporal change in community dissimilarity along Axis 1.
+
+Group effect:
+* Group2 = (Insert value), p = (Insert value)
+* Interaction (Time × Group): (Insert value), p = (Insert value)
+
+Interpretation
+
+Axis 1 scores show a (small/moderate/strong) temporal trend, indicating progressive changes in community composition over time according to Jaccard dissimilarity. No significant/significant treatment effect or interaction was observed.
+
+2. Axis 2 (Jaccard PCoA) model
+
+Random effects
+
+* Between-animal variability: SD ≈ (Insert value)
+* Residual SD ≈ (Insert value)
+* Temporal autocorrelation: φ = (Insert value)
+
+Fixed effects
+
+* All predictors were non-significant:
+* Time effect: p = (Insert value)
+* Group effect: p = (Insert value)
+* Time × Group interaction: p = (Insert value)
+
+Interpretation
+
+Variation along Axis 2 is not associated with Time or Group, suggesting that this dimension reflects stochastic variation or unmodeled ecological processes rather than systematic experimental effects.
+
+Overall Results (Compact Version)
+
+A linear mixed-effects modeling framework applied to ordination scores revealed that Time was the primary driver of beta diversity changes along the main compositional gradients. Significant temporal effects were observed for the primary axes (PC1 and/or Axis 1), indicating progressive community shifts over the course of the study. No significant baseline differences between groups were detected, and the Time × Group interaction was not significant, suggesting similar longitudinal trajectories across groups. Substantial between-animal variability was captured by random intercepts, and high CAR(1) coefficients (φ ≈ (Insert range)) indicated strong within-animal autocorrelation across timepoints.
+
+3. Axis 1 (Aitchison PCoA) model
+
+Random effects
+
+* Between-animal variability: SD ≈ (Insert value)
+* Residual SD: SD ≈ (Insert value)
+* Temporal autocorrelation (CAR(1)): φ = (Insert value), indicating (weak / moderate / strong) within-animal temporal correlation.
+
+Fixed effects
+
+* Intercept (baseline — reference group): Estimate = (Insert value), p = (Insert value)
+Represents the expected Axis 1 score at baseline for the reference group, corresponding to the position of the baseline community along the primary Aitchison compositional gradient
+
+Time effect
+
+* Time = (Insert value) per unit time, p = (Insert value) Indicating a significant/non-significant temporal shift in microbiome composition along Axis 1, representing systematic movement of communities along the principal Aitchison beta-diversity gradient.
+* Group effect: Group2 = (Insert value), p = (Insert value)
+Represents baseline differences in community composition between Group2 and the reference group along Axis 1.
+* Interaction (Time × Group): Estimate = (Insert value), p = (Insert value), indicating whether temporal trajectories differ between groups along the primary compositional gradient.
+
+Interpretation
+
+Axis 1 captures the dominant gradient of Aitchison compositional variation across samples.
+Axis 1 scores show a (small / moderate / strong) temporal trend, indicating progressive changes in microbial community composition over time.
+No significant / significant Group effect was observed at baseline, suggesting similar / different initial community structures between groups.
+The Time × Group interaction was non-significant / significant, indicating parallel / divergent longitudinal trajectories between experimental group
+
+4. Axis 2 (Aitchison PCoA) model
+
+Random effects
+
+* Between-animal variability: SD ≈ (Insert value)
+* Residual SD: SD ≈ (Insert value)
+* Autocorrelation: φ = (Insert value)
+
+Fixed effects
+
+All predictors were non-significant/significant:
+* Time effect: p = (Insert value)
+* Group effect: p = (Insert value)
+* Time × Group interaction: p = (Insert value)
+
+Interpretation
+
+Axis 2 represents a secondary compositional gradient explaining a smaller fraction of the overall Aitchison beta-diversity variation.
+The absence of significant associations with Time or Group suggests that variability along this axis likely reflects individual-specific microbiome differences or stochastic ecological variation rather than systematic experimental effects.
+
+Overall Results — Compact Version
+
+A linear mixed-effects modeling framework applied to PCoA ordination scores derived from Aitchison distances revealed that Time was the primary driver of longitudinal beta-diversity dynamics.
+Significant temporal effects were observed along the primary ordination axis (Axis 1), indicating progressive shifts in microbial community composition over the course of the study./ No significant baseline differences between experimental groups were detected, and the Time × Group interaction was non-significant, suggesting similar longitudinal microbiome trajectories between groups.
+Substantial between-animal variability was captured by random intercepts, while CAR(1) autocorrelation coefficients (φ ≈ (Insert range)) indicated strong within-animal temporal dependence of microbiome composition.
+
+\FloatBarrier
+
+## 6. Temporal autocorrelation for beta diversity
+
+Temporal autocorrelation of ordination scores was evaluated to assess within-animal dependencies across repeated measurements. Spaghetti plots were used to visualize individual trajectories, and mixed-effects models with an AR(1) correlation structure were fitted to quantify the strength of temporal dependence.
+
+Between-animal variability (random intercept standard deviation) indicates how much animals differ on average from each other, after accounting for Timepoint and Group.
+
+Residual variability reflects all the remaining variation within animals over time that the model can't explain (e.g., biological fluctuations, noise).
+
+AR(1) parameter shows the correlation of successive measurements within the same animal.
+```{r autocorr, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.cap='Spaghetti plots of PC1 and PC2', fig.height = 3, fig.width = 5, fig.align = "center"}
+
+# Paths
+autocorr <- file.path(beta_div, "autocorrelation")
+dir.create(autocorr, showWarnings = FALSE, recursive = TRUE)
+
+# Import phyloseq object and build metadata 
+ps     <- readRDS("ps1.dna.rds")
+meta_df <- sample_data(ps) %>%
+  as("data.frame") %>%
+  mutate(
+    Timepoint    = as.numeric(Timepoint),
+    Group  = factor(Group),
+    Animal = factor(Animal)
+  )
+
+# Build abundance matrix with samples as rows ---
+abun_mat <- as.matrix(otu_table(ps))
+if (taxa_are_rows(ps)) abun_mat <- t(abun_mat)
+
+#==============================================================================================================
+
+# add small pseudocount to zeros for ILR
+abund_nozero <- zCompositions::cmultRepl(abun_mat) # method Count Zero Multiplicative-CZM
+
+# abun_mat[abun_mat == 0] <- 0.5 (Alternatively, run this command manual option) 
+
+#==============================================================================================================
+
+# Aitchison distance 
+aitch_dmat <- vegan::vegdist(abund_nozero, method = "aitchison")
+
+# PCoA
+pcoa_res <- ape::pcoa(aitch_dmat)
+var_pct  <- pcoa_res$values$Relative_eig
+
+# Extract scores
+pcoa_scores <- pcoa_res$vectors[,1:2] %>%
+  as.data.frame() %>%
+  rownames_to_column("SampleID") %>%
+  rename(
+    Axis1 = Axis.1,
+    Axis2 = Axis.2
+  )
+
+# Join metadata
+pcoa_df <- left_join(pcoa_scores, meta_df, by = "SampleID") %>%
+  arrange(Animal, Timepoint)
+
+# Spaghetti plots
+
+# Axis1 vs Timepoint
+p1 <- ggplot(pcoa_df,
+             aes(x = Timepoint, y = Axis1, group = Animal, color = Group)) +
+  geom_line(alpha = 0.5) +
+  geom_point(size = 2) +
+  labs(
+    x = "Timepoint (days)",
+    y = paste0("Axis1 (", round(var_pct[1]*100,2), "%)"),
+    title = "PCoA Axis1 dynamics over Timepoint"
+  ) +
+  theme_bw(base_size = 12)
+
+ggsave(file.path(autocorr, "pcoa_axis1_spaghetti.pdf"),
+       p1, width = 6, height = 4, units = "in", dpi = 300)
+
+p1
+
+# Axis2 vs Timepoint
+p2 <- ggplot(pcoa_df,
+             aes(x = Timepoint, y = Axis2, group = Animal, color = Group)) +
+  geom_line(alpha = 0.5) +
+  geom_point(size = 2) +
+  labs(
+    x = "Timepoint (days)",
+    y = paste0("Axis2 (", round(var_pct[2]*100,2), "%)"),
+    title = "PCoA Axis2 dynamics over Timepoint"
+  ) +
+  theme_bw(base_size = 12)
+
+ggsave(file.path(autocorr, "pcoa_axis2_spaghetti.pdf"),
+       p2, width = 6, height = 4, units = "in", dpi = 300)
+
+p2
+
+# Mixed-effects models
+# NA filtering
+pcoa_df2 <- pcoa_df %>%
+  filter(!is.na(Timepoint) & !is.na(Group) & !is.na(Axis1))
+
+model_Axis1 <- nlme::lme(
+  Axis1 ~ Timepoint * Group,
+  random      = ~1 | Animal,
+  correlation = nlme::corCAR1(form = ~Timepoint | Animal),
+  data        = pcoa_df2,
+  method      = "REML"
+)
+
+model_Axis2 <- update(model_Axis1,
+                      Axis2 ~ Timepoint * Group,
+                      data = pcoa_df2)
+
+# Tidy tables for report
+
+cat("### Model for Axis1\n")
+knitr::kable(broom::tidy(model_Axis1), digits = 3)
+
+cat("\n### Model for Axis2\n")
+knitr::kable(broom::tidy(model_Axis2), digits = 3)
+
+```
+
+## 7. Session info
+```{r session_info, eval=TRUE, echo=F}
+
+sessionInfo()
+
+```

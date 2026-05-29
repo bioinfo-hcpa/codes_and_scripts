@@ -9,7 +9,7 @@ The analyses are primarily performed using the **phyloseq**, **microbiome**, **v
 
 ## Available Scripts
 
-### `2_HCPA_NBioinfo_16S_crossSectional_overview.Rmd`
+### [2_HCPA_NBioinfo_16S_crossSectional_overview.Rmd](2_HCPA_NBioinfo_16S_crossSectional_overview.Rmd)
 
 Descriptive analysis workflow for microbiome characterization across experimental groups.
 
@@ -32,7 +32,7 @@ Outputs:
 * Taxonomic composition summaries.
 
 ---
-### `3_HCPA_NBioinfo_16S_crossSectional_process_alphaBetadiv.Rmd`
+### [3_HCPA_NBioinfo_16S_crossSectional_process_alphaBetadiv.Rmd](3_HCPA_NBioinfo_16S_crossSectional_process_alphaBetadiv.Rmd)
 
 Workflow for alpha and beta diversity analyses.
 
@@ -56,7 +56,6 @@ Methods:
 * Compositional approaches using the `compositions` package.
 * Ecological distance-based analyses using the `vegan` package.
 * Ordination techniques:
-  * PCA
   * PCoA
   * NMDS
 
@@ -65,21 +64,18 @@ Statistical testing:
 * PERMANOVA (`adonis2`) for global community comparisons.
 
 Outputs:
-* PCA, PCoA, and NMDS plots.
+* PCoA and NMDS plots.
 * 95% confidence ellipses.
-* Explained variance (PCA and PCoA).
+* Explained variance (PCoA).
 * Stress values (NMDS).
 * Exported sample coordinates.
 * Statistical summary tables containing F statistics, R² values, and p-values.
 
 ---
 
-### `4_HCPA_NBioinfo_16S_crossSectional_diffAbundance.Rmd`
+### [4_HCPA_NBioinfo_16S_crossSectional_diffAbundance.Rmd](4_HCPA_NBioinfo_16S_crossSectional_diffAbundance.Rmd)
 
-Workflow for differential abundance analysis.
-
-Main objective:
-* Identify microbial genera with significantly different abundances between experimental groups.
+Workflow for differential abundance analysis using ANCOM-BC2 to identify microbial genera associated with experimental groups.
 
 Methods:
 * ANCOM-BC2 implemented through the `ANCOMBC` package.
@@ -94,3 +90,12 @@ Outputs:
 * Direction of abundance change between groups.
 * Adjusted p-values.
 * Horizontal bar plots summarizing differential abundance results.
+
+---
+
+## Maintenance and Updates
+
+- Original workflows: **HCPA Bioinformatics Center**
+- Reviewer: **Thaiane Nascimento**, Bioinformatician (Key workflow updates and documentation)
+- Last update: **March 2026**
+

@@ -1,0 +1,994 @@
+---
+title: "In this field, insert the project title"
+author: "In this field, insert the author(s) of the analysis"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 3
+    latex_engine: xelatex
+  word_document:
+    toc: yes
+    toc_depth: 5
+  html_document:
+    df_print: paged
+    theme: cerulean
+    highlight: haddock
+    toc: yes
+    toc_depth: 3
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+    code_folding: show
+always_allow_html: yes
+header-includes:
+  - \usepackage{float}
+  - \usepackage{placeins}           # \FloatBarrier
+  - \usepackage[font=small]{caption} # Legends
+---
+================================================================================
+# Study description:
+
+
+~ Include here a brief description of the study ~
+
+
+================================================================================
+
+# OVERVIEW - TIMESERIES
+
+# 1. Load Libraries
+```{r libraries_overview, eval=TRUE, echo=FALSE, warning=FALSE, include=FALSE}
+
+library(gtsummary)
+library(writexl)
+library(dplyr)
+library(phyloseq)
+library(nlme)
+library(vegan)
+library(compositions)
+library(ggplot2)
+library(lme4)
+library(reshape2) 
+library(vegan)
+library(ade4)
+library(plotly)
+library(pracma) 
+library(fpc) 
+library(tidyverse)
+library(cluster)
+library(RColorBrewer)
+library(ape)
+library(gplots)
+library(RColorBrewer)
+library(pheatmap)
+library(Maaslin2)
+library(ggpicrust2)
+library(microbiome)
+library(file2meco)
+library(microbiomeutilities)
+library(gridExtra)
+library(GGally)
+library(broom)
+library(broom.mixed)
+library(kableExtra)
+library(emmeans)
+library(cardx)
+library(tibble)
+library(knitr)
+library(forcats)
+library(here)
+
+```
+
+# 2. Data preparation
+
+## 2.1. Data preparation and summary data table  
+```{r data_prep, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+
+#  Path
+path     <- here::here() 
+overview <- file.path(path, "overview")
+dir.create(overview, showWarnings = FALSE, recursive = TRUE)
+
+# Load data
+ps0 <- readRDS("ps.dna.rds")
+
+# Adjust rownames from sample data to adjust table
+samdf <- sample_data(ps0)
+otu_table <- otu_table(ps0)
+rownames(samdf) <- samdf$SampleID
+rownames(otu_table) <- samdf$SampleID 
+
+# organize the ps0 object with update names
+ps0 <- phyloseq(tax_table(ps0),
+                sample_data(samdf),
+                otu_table(otu_table, taxa_are_rows = FALSE))
+
+# Set the reference group 
+sample_data(ps0)$Group <- factor(
+  sample_data(ps0)$Group,
+  levels = c("Group1", "Group2")
+)
+
+#  Additional adjustments in ps0 object (df enhancement)
+sample_data(ps0)$Animal <- sprintf("A%03d",
+                                   as.numeric(gsub("A", "",
+                                                   sample_data(ps0)$Animal)))
+sample_data(ps0)$Timepoint <- factor(
+  sample_data(ps0)$Timepoint,
+  levels = c(1, 2, 3),
+  labels = c("TP1", "TP2", "TP3")
+)
+
+# Extracts and saves adjusted metadata
+samdf <- microbiome::meta(ps0)
+saveRDS(samdf, file.path(overview, "adjusted_metadata.rds"))
+saveRDS(ps0,  "ps0.rds")
+
+# Create table 
+summary_table <- samdf %>%
+  select(Group, Timepoint) %>%
+  tbl_summary(
+    by        = Timepoint,
+    missing   = "no",
+    statistic = all_categorical() ~ "{n}/{N} ({p}%)",
+    label     = list(Group ~ "Group")
+  ) %>%
+  add_p(test = all_categorical() ~ "fisher.test") %>%
+  modify_header(
+    label          ~ "**Variable**",
+    all_stat_cols() ~ "**{level}**"              # {level} became D20, D25, D103
+  ) %>%
+  modify_spanning_header(
+    all_stat_cols() ~ "**Timepoint (N={N})**"    # display N= in each column 
+  ) %>%
+  bold_labels()
+
+# Export to excel
+write_xlsx(
+  as_tibble(summary_table$table_body),
+  file.path(overview, "summary_statistics.xlsx")
+)
+
+# Format table for printing 
+print(
+  summary_table %>%
+    as_kable_extra(
+      booktabs    = TRUE,
+      linesep     = "",
+      caption     = "Descriptive Table by Timepoint"
+    ) %>%
+    kable_styling(
+      latex_options = c("hold_position", "scale_down")
+    )
+)
+
+# clear environment
+#rm(list = ls(all = TRUE))
+
+```
+We were able to identify loss to follow-up with substitution, resulting in one fewer sample at Day 20.
+\FloatBarrier
+
+## 2.2. Plot Data Preparation
+```{r data_prep_plot, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4,  fig.cap='Prevalence vs. Total Abundance (ASVs) with filtering cutoff'}
+
+# Paths
+path         <- here::here() 
+plots_dir <- file.path(path, 'prev_abund_plots')
+dir.create(plots_dir)
+
+# load data
+ps.dna <- readRDS("ps0.rds")
+ps0.dna <- subset_taxa(ps.dna,
+                       !is.na(Phylum) &
+                       !Phylum %in% c("", "uncharacterized", "NA"))
+prevalenceThreshold <- 0.1 * nsamples(ps0.dna)
+
+# Prevalence x Abundance
+prev_counts <- apply(otu_table(ps0.dna) > 0,
+                     ifelse(taxa_are_rows(ps0.dna), 1, 2),
+                     sum)
+abund_counts <- taxa_sums(ps0.dna)
+prevdf_asv <- data.frame(Prevalence = prev_counts,
+                         Abundance  = abund_counts)
+
+# Plot
+prev_plot <- ggplot(prevdf_asv, aes(x = Prevalence, y = Abundance)) +
+  geom_point(alpha = 0.4) +
+  geom_vline(xintercept = prevalenceThreshold,
+             linetype = "dashed", color = "red") +
+  labs(
+    title    = "Prevalence vs. Total Abundance (ASVs)",
+    subtitle = paste0("Filtering cutoff = ", prevalenceThreshold, " samples"),
+    x        = "Number of samples in which ASV appears",
+    y        = "Total read count"
+  ) +
+  theme_bw(base_size = 12)
+
+# Save
+ggsave(filename = "prevalence_vs_abundance.png" , plot = prev_plot, path = plots_dir, width = 6, height = 4, units = "in", dpi = 300)
+ggsave(filename = "prevalence_vs_abundance.pdf" , plot = prev_plot, path = plots_dir, width = 6, height = 4, units = "in", dpi = 300)
+saveRDS(ps0.dna, "ps0.dna.rds")
+
+```
+
+
+## 2.3. Data preparation overview table
+```{r data_prep_table, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+
+# Load data
+ps0.dna      <- readRDS("ps0.rds")
+ps0.filtered <- subset_taxa(ps0.dna,
+                            !is.na(Phylum) &
+                            !Phylum %in% c("", "uncharacterized", "NA"))
+
+# Filtering based on prevalence and abundance
+prevalenceThreshold <- 0.1 * nsamples(ps0.filtered)                # 10% das amostras
+totalReads          <- sum(taxa_sums(ps0.filtered))
+abundanceThreshold  <- 0.0001 * totalReads                           # 0.01% do total de reads
+
+# Filtering ASV
+keepASV   <- taxa_sums(ps0.filtered) >= abundanceThreshold &
+             apply(otu_table(ps0.filtered) > 0,
+                   ifelse(taxa_are_rows(ps0.filtered), 1, 2),
+                   sum) >= prevalenceThreshold
+ps1.dna   <- prune_taxa(keepASV, ps0.filtered)
+
+# Filtering Genus
+ps0.genus      <- tax_glom(ps0.filtered, "Genus",  NArm = FALSE)
+keepGenus      <- taxa_sums(ps0.genus) >= abundanceThreshold &
+                  apply(otu_table(ps0.genus) > 0,
+                        ifelse(taxa_are_rows(ps0.genus), 1, 2),
+                        sum) >= prevalenceThreshold
+ps1.dna.genus  <- prune_taxa(keepGenus, ps0.genus)
+
+# Filtering Family
+ps0.family     <- tax_glom(ps0.filtered, "Family", NArm = FALSE)
+keepFamily     <- taxa_sums(ps0.family) >= abundanceThreshold &
+                  apply(otu_table(ps0.family) > 0,
+                        ifelse(taxa_are_rows(ps0.family), 1, 2),
+                        sum) >= prevalenceThreshold
+ps1.dna.family <- prune_taxa(keepFamily, ps0.family)
+
+# Filtering Phylum
+ps0.phyla      <- tax_glom(ps0.filtered, "Phylum", NArm = FALSE)
+keepPhylum     <- taxa_sums(ps0.phyla) >= abundanceThreshold &
+                  apply(otu_table(ps0.phyla) > 0,
+                        ifelse(taxa_are_rows(ps0.phyla), 1, 2),
+                        sum) >= prevalenceThreshold
+ps1.dna.phy    <- prune_taxa(keepPhylum, ps0.phyla)
+
+# Save
+saveRDS(ps1.dna,        "ps1.dna.rds")
+saveRDS(ps1.dna.genus,  "ps1.dna.genus.rds")
+saveRDS(ps1.dna.family, "ps1.dna.family.rds")
+saveRDS(ps1.dna.phy,    "ps1.dna.phy.rds")
+
+# Create table
+counts <- tibble(
+  Level      = c("ASV", "Genus", "Family", "Phylum"),
+  Before     = c(ntaxa(ps0.filtered), ntaxa(ps0.genus),
+                 ntaxa(ps0.family),    ntaxa(ps0.phyla)),
+  After      = c(ntaxa(ps1.dna),      ntaxa(ps1.dna.genus),
+                 ntaxa(ps1.dna.family),ntaxa(ps1.dna.phy)),
+  `Prev Thres`  = round(prevalenceThreshold, 1),
+  `Abund Thres` = round(abundanceThreshold, 0)
+)
+
+# Format table for printing
+counts %>%
+  kable(
+    caption = "Taxa before/after prevalence \\& abundance filtering",
+    digits  = 0,
+    booktabs= TRUE
+  ) %>%
+  kable_classic(full_width = FALSE, position = "center") %>%
+  column_spec(2:3, width = "1.5cm") %>%
+  column_spec(4:5, width = "1.2cm")
+
+# 9) Limpa ambiente
+#rm(list = ls(all = TRUE))
+
+```
+\FloatBarrier
+
+We filtered out taxa lacking phylum-level annotations, applied a 10% prevalence filter, 0.01% abundance filter, and aggregated taxa at the phylum, family, and genus levels.
+
+# 3. Microbiome overview
+
+## 3.1. Composition of microbiome
+```{r dataSummary, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4}
+
+# Paths
+path         <- here::here()
+overview_dir <- file.path(path, 'overview')
+dir.create(overview_dir, showWarnings = FALSE, recursive = TRUE)
+
+# Load data
+ps_ASV    <- readRDS(file.path(path, 'ps1.dna.rds'))
+
+# Agglomerate by taxonomic level
+ps_phylum <- tax_glom(ps_ASV, 'Phylum', NArm = TRUE)
+ps_family <- tax_glom(ps_ASV, 'Family', NArm = TRUE)
+ps_genus  <- tax_glom(ps_ASV, 'Genus', NArm = TRUE)
+
+# Metadata // Related info
+# Adjust accordingly group names and factors (categorical variables)
+meta <- data.frame(sample_data(ps_ASV)) %>%
+  mutate(
+    Sample      = sample_names(ps_ASV),
+    Depth       = sample_sums(ps_ASV),
+    Group = factor(Group, levels = c('Group1','Group2')),
+    Timepoint = factor(paste0("TP", Timepoint), levels = c("TP1","TP2","TP3"))
+  )
+
+# 4) two‑way ANOVA  e tabela tidy
+depth_aov <- aov(Depth ~ Group * Timepoint, data = meta)
+anova_tbl <- broom::tidy(depth_aov)
+colnames(anova_tbl)[1:6] <- c('Term','Df','Sum Sq','Mean Sq','F value','Pr(>F)')
+
+# Format table for printing (kable pack)
+anova_tbl %>%
+  kable(caption = 'Two‑way ANOVA on Sequencing Depth', digits = 3, booktabs = TRUE) %>%
+  kable_styling(latex_options = c('hold_position','scale_down')) %>%
+  print()
+
+# 10) Limpa ambiente
+#rm(list = ls(all = TRUE))
+
+```
+\FloatBarrier
+
+```{r depthSeq, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4}
+
+# Sequencing depth boxplot by group and time point.
+p0 <- ggplot(meta, aes(x = Group, y = Depth, fill = Group)) +
+  geom_boxplot(width = 0.6) +
+  scale_fill_manual(values = c('Group1' = 'steelblue',
+                               'Group2' = 'orange'
+                               )) +
+  facet_grid(. ~ Timepoint) +                         # <- aqui
+  labs(title = 'Library size by Group and Timepoint',
+       x = 'Group', y = 'Sequencing depth (total number of reads)'
+       ) +
+  theme_bw() +
+  theme(legend.position = 'none')
+
+ggsave(file.path(overview_dir, 'fig0_depth_boxplot.pdf'),
+       p0, width = 180, height = 120, units = 'mm', dpi = 300)
+
+print(p0)
+
+# Save
+ggsave(
+  file.path(overview_dir, 'fig0_depth_boxplot.pdf'),
+  p0, width = 180, height = 120, units = 'mm', dpi = 300
+)
+
+```
+
+```{r librarySize, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4}
+
+# library size barchart by sample
+p1 <- ggplot(meta, aes(x = Sample, y = Depth, fill = Group)) +
+  geom_bar(stat = 'identity') +
+  scale_fill_manual(values = c('Group1' = 'steelblue', 
+                               'Group2' = 'orange'
+                               )) +
+  labs(title = 'Library size by Sample', 
+       x = 'Sample ID', 
+       y = 'Sequencing depth (total number of reads)', 
+       fill = 'Group'
+       ) +
+  theme_bw(base_size = 8) + 
+  theme(axis.text.x = element_text(angle = 90, 
+                                   vjust = 0.5, 
+                                   hjust = 1), 
+        legend.position = 'top')
+
+ggsave(file.path(overview_dir, 'fig1_library_size.pdf'), p1, width = 180, height = 120, units = 'mm', dpi = 300)
+
+print(p1)
+
+```
+
+```{r funcRelat_abundance, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4}
+
+# Function for relative abundance 
+taxa_plot <- function(ps_obj, level_col, top_n, fig_num) {
+  ps_ra <- transform_sample_counts(ps_obj, function(x) x / sum(x))
+  df    <- psmelt(ps_ra)
+  # se usar level_col='ASV', renomeia coluna OTU para ASV
+  if (level_col == 'ASV') df <- rename(df, ASV = OTU)
+  # identifica coluna real para agrupamento
+  real_col <- if (level_col == 'ASV') 'ASV' else level_col
+  # calcula top taxa
+  top_taxa <- df %>%
+    group_by(.data[[real_col]]) %>%
+    summarize(mean_abund = mean(Abundance), .groups = 'drop') %>%
+    arrange(desc(mean_abund)) %>%
+    slice_head(n = top_n) %>%
+    pull(real_col)
+  # agrega para plot
+  df_plot <- df %>%
+    mutate(Taxa = as.character(.data[[real_col]]), Taxa = ifelse(Taxa %in% top_taxa, Taxa, 'Other')) %>%
+    group_by(Sample, Group, Timepoint, Taxa) %>%
+    summarize(Abundance = sum(Abundance), .groups = 'drop') %>%
+    mutate(Taxa = fct_reorder(Taxa, Abundance, .fun = mean))
+  
+  p <- ggplot(df_plot, aes(x = Sample, y = Abundance, fill = Taxa)) +
+    geom_bar(stat = 'identity') +
+    facet_wrap(vars(Timepoint, Group), ncol = 2, scales = 'free_x') +
+    labs(title = paste0('Figure ', fig_num, ': Relative Abundance at ', level_col),
+         x = 'Sample ID', 
+         y = 'Relative Abundance', 
+         fill = level_col) +
+    theme_bw(base_size = 8) + 
+    theme(axis.text.x = element_text(angle = 90, 
+                                     vjust = 0.5, 
+                                     hjust = 1, size = 6),
+                        strip.background = element_rect(
+                          fill = 'white'),
+                        strip.text = element_text(face = 'bold'),
+                        legend.position = 'right')
+  # save
+  fname <- paste0('fig', fig_num, '_', tolower(level_col), '.pdf')
+  ggsave(file.path(overview_dir, fname), p, width = 180, height = 120, units = 'mm', dpi = 300)
+  
+  print(p)
+}
+
+```
+
+```{r f4, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4, fig.cap= "Relative abundance at phylum level"}
+
+taxa_plot(ps_phylum, 'Phylum', 10, '2')
+
+```
+
+```{r f5, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4, fig.cap= "Relative abundance at family level"}
+
+taxa_plot(ps_family, 'Family', 10, '3')
+
+```
+
+```{r f6, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4, fig.cap= "Relative abundance at genus level"}
+
+taxa_plot(ps_genus,  'Genus',  20, '4')
+
+```
+
+```{r f7, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4, fig.cap= "Relative abundance at ASV level"}
+
+taxa_plot(ps_ASV,    'ASV',    20, '5')
+
+```
+
+### 3.2. General Dominant taxa
+Here we transform the data in relative abundances for proper evaluation.
+```{r microbiome_overview, eval=T, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Paths
+path <- here::here() 
+overview = paste(path,"/overview/",sep = "")
+
+# Load data
+ps0.dna <- readRDS("ps1.dna.rds")
+
+# Agglomerating
+ps.dna.phy <- tax_glom(ps0.dna, "Phylum", NArm = TRUE)
+ps.dna.family <- tax_glom(ps0.dna, "Family", NArm = TRUE)
+ps.dna.genus <- tax_glom(ps0.dna, "Genus", NArm = TRUE)
+
+# ASV level
+ps.ra <- transform_sample_counts(ps0.dna, function(x) x/sum(x))
+
+# Phylum level
+taxa_names(ps.dna.phy) <- tax_table(ps.dna.phy)[,2]
+ps.phy.ra <- transform_sample_counts(ps.dna.phy, function(x) x/sum(x))
+
+# Family level
+taxa_names(ps.dna.family) <- tax_table(ps.dna.family)[,5]
+ps.family.ra <- transform_sample_counts(ps.dna.family, function(x) x/sum(x))
+
+# Genus level
+# taxa_names(ps.dna.genus) <- tax_table(ps.dna.genus)[,6]
+ps.genus.ra <- transform_sample_counts(ps.dna.genus, function(x) x/sum(x))
+genus.melt <- psmelt(ps.genus.ra)
+
+```
+
+The distribution of the reads are here summarized on phylum, family and genus level. 
+```{r ov_microbiome_tables, eval=T, echo=FALSE, message=FALSE, warning=FALSE}
+
+df2 <- data.frame(tax_table(ps.dna.phy), taxprc = 100*taxa_sums(ps.phy.ra)/length(sample_names(ps.phy.ra)))
+df3 <- data.frame(tax_table(ps.dna.family), taxprc = 100*taxa_sums(ps.family.ra)/length(sample_names(ps.family.ra)))
+df4 <- data.frame(tax_table(ps.dna.genus),taxprc = 100*taxa_sums(ps.genus.ra)/length(sample_names(ps.genus.ra)))
+df5 <- data.frame(tax_table(ps0.dna),taxprc = 100*taxa_sums(ps.ra)/length(sample_names(ps.ra)))
+
+df.count <- data.frame(Included = c("All", "> 0.01%", "> 0.1%","> 1%"),
+                          Phylum = c(nrow(df2),sum(df2$taxprc > 0.01),sum(df2$taxprc > 0.1),sum(df2$taxprc > 1)),
+                          Family = c(nrow(df3),sum(df3$taxprc > 0.01),sum(df3$taxprc > 0.1),sum(df3$taxprc > 1)),
+                          Genus = c(nrow(df4),sum(df4$taxprc > 0.01),sum(df4$taxprc > 0.1),sum(df4$taxprc > 1)),
+                          ASV = c(nrow(df5),sum(df5$taxprc > 0.01),sum(df5$taxprc > 0.1),sum(df5$taxprc > 1)))
+
+# Output file - Export to excel 
+
+# abundance df for different taxonomic levels
+FileName <- paste(overview,"/Abundance of phyla, family, genera and ASV in microbiome samples.xlsx", sep = "")
+write_xlsx(df.count,FileName)
+
+# abundance genus level df
+FileName <- paste(overview,"/Average abundance according to genus.xlsx", sep = "")
+write_xlsx(df4,FileName)
+
+# abundance family level df
+FileName <- paste(overview,"/Average abundance according to family.xlsx", sep = "")
+write_xlsx(df3,FileName)
+
+# abundance phylum level df
+FileName <- paste(overview,"/Average abundance according to phylum.xlsx", sep = "")
+write_xlsx(df2,FileName)
+
+# Count of ASV and taxa in samples
+kable(df.count, row.names = F,digits = 1, caption = 'Abundance of phyla, family, genera and ASV in microbiome samples')%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# Top 6 dominating phyla (prc abundance)
+kable(head(df2[order(df2$taxprc,decreasing = T),c("Kingdom","Phylum","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to phylum',col.names = c("Kingdom","Phylum","Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# Top 6 dominating family (prc abundance)
+kable(head(df3[order(df3$taxprc,decreasing = T),c("Kingdom","Phylum","Family", "taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to family',col.names = c("Kingdom","Phylum", "Family", "Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# Top 6 dominating (genera prc abundance)
+kable(head(df4[order(df4$taxprc,decreasing = T),c("Kingdom","Phylum","Class","Order","Family","Genus","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to genus',col.names = c("Kingdom","Phylum","Class","Order","Family","Genus","Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# clean environment
+#rm(list = ls(all = TRUE))
+
+```
+\FloatBarrier
+
+### 3.3. Distribution of taxa in the samples of Group 1
+```{r group1_dist1, eval=T, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Paths
+path <- here:here()
+over_group_timepoint = paste(path,"/overview_by_group_and_timepoint/",sep = "")
+dir.create(over_group_timepoint)
+
+# Load data
+ps <- readRDS("ps1.dna.rds")
+ps.group1 <- subset_samples(ps, Group=='Group1') # Adjust group and variable name accordingly
+
+# Agglomerating 
+ps.group1.phy <- tax_glom(ps.group1, "Phylum", NArm = TRUE)
+ps.group1.family <- tax_glom(ps.group1, "Family", NArm = TRUE)
+ps.group1.genus <- tax_glom(ps.group1, "Genus", NArm = TRUE)
+
+# ASV level
+ps.group1.ra <- transform_sample_counts(ps.group1, function(x) x/sum(x))
+
+# Phylum level
+taxa_names(ps.group1.phy) <- tax_table(ps.group1.phy)[,2]
+ps.group1.phy.ra <- transform_sample_counts(ps.group1.phy, function(x) x/sum(x))
+
+# Family level
+taxa_names(ps.group1.family) <- tax_table(ps.group1.family)[,5]
+ps.group1.family.ra <- transform_sample_counts(ps.group1.family, function(x) x/sum(x))
+
+# Genus level
+#taxa_names(ps.dna.genus) <- tax_table(ps.dna.genus)[,6]
+ps.group1.genus.ra <- transform_sample_counts(ps.group1.genus, function(x) x/sum(x))
+ps.group1.genus.melt <- psmelt(ps.group1.genus.ra)
+
+# Calculating relative abundance
+df2 <- data.frame(tax_table(ps.group1.phy), 
+                  taxprc = 100*taxa_sums(ps.group1.phy.ra)/
+                    length(sample_names(ps.group1.phy.ra)))
+df3 <- data.frame(tax_table(ps.group1.family), 
+                  taxprc = 100*taxa_sums(ps.group1.family.ra)/
+                    length(sample_names(ps.group1.family.ra)))
+df4 <- data.frame(tax_table(ps.group1.genus),
+                  taxprc = 100*taxa_sums(ps.group1.genus.ra)/
+                    length(sample_names(ps.group1.genus.ra)))
+df5 <- data.frame(tax_table(ps.group1),
+                  taxprc = 100*taxa_sums(ps.group1.ra)/
+                    length(sample_names(ps.group1.ra)))
+
+df.count <- data.frame(Included = c("All", "> 0.01%", "> 0.1%","> 1%"),
+                          Phylum = c(nrow(df2),sum(df2$taxprc > 0.01),sum(df2$taxprc > 0.1),sum(df2$taxprc > 1)),
+                          Family = c(nrow(df3),sum(df3$taxprc > 0.01),sum(df3$taxprc > 0.1),sum(df3$taxprc > 1)),
+                          Genus = c(nrow(df4),sum(df4$taxprc > 0.01),sum(df4$taxprc > 0.1),sum(df4$taxprc > 1)),
+                          ASV = c(nrow(df5),sum(df5$taxprc > 0.01),sum(df5$taxprc > 0.1),sum(df5$taxprc > 1)))
+
+# Count of ASV and taxa in group 1 samples
+kable(df.count, row.names = F,digits = 1, caption = 'Abundance of phyla, family, genera and ASV in Group 1 samples')%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# Export to excel
+FileName <- paste(over_group_timepoint,"/Abundance of phyla, family, genera and ASV in Group 1 samples.xlsx", sep = "")
+write_xlsx(df.count,FileName)
+
+# Top 6 dominating phyla (prc abundance)
+kable(head(df2[order(df2$taxprc,decreasing = T),c("Kingdom","Phylum","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to phylum in Group 1 samples',col.names = c("Kingdom","Phylum","Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# Export to excel
+FileName <- paste(over_group_timepoint,"/Average abundance according to phylum in Group 1 samples.xlsx", sep = "")
+write_xlsx(df2,FileName)
+
+# Top 6 dominating family (prc abundance)
+kable(head(df3[order(df3$taxprc,decreasing = T),c("Kingdom","Phylum","Family", "taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to family in Group 1 samples',col.names = c("Kingdom","Phylum", "Family", "Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# Export to excel
+FileName <- paste(over_group_timepoint,"/Average abundance according to family in Group 1 samples.xlsx", sep = "")
+write_xlsx(df3,FileName)
+
+# Top 6 dominating (genera prc abundance)
+kable(head(df4[order(df4$taxprc,decreasing = T),c("Kingdom","Phylum","Class","Order","Family","Genus","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to genus in Group 1 samples',col.names = c("Kingdom","Phylum","Class","Order","Family","Genus","Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# Export to excel
+FileName <- paste(over_group_timepoint,"/Average abundance according to genus in Group 1 samples.xlsx", sep = "")
+write_xlsx(df4,FileName)
+
+# clean environment
+#rm(list = ls(all = TRUE))
+
+```
+\FloatBarrier
+
+### 3.4. Distribution of taxa in the samples of Group 2
+```{r group_2_dist1, eval=T, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Paths
+path <- here::here()
+over_group_timepoint = paste(path,"/overview_by_group_and_timepoint/",sep = "")
+
+# Load data
+ps <- readRDS("ps1.dna.rds")
+ps.beta <- subset_samples(ps, Group=='Group2')
+
+#Aglomerações
+ps.group2.phy <- tax_glom(ps.group2, "Phylum", NArm = TRUE)
+ps.group2.family <- tax_glom(ps.group2, "Family", NArm = TRUE)
+ps.group2.genus <- tax_glom(ps.group2, "Genus", NArm = TRUE)
+
+# ASV level
+ps.group2.ra <- transform_sample_counts(ps.group2, function(x) x/sum(x))
+
+# Phylum level
+taxa_names(ps.group2.phy) <- tax_table(ps.group2.phy)[,2]
+ps.group2.phy.ra <- transform_sample_counts(ps.group2.phy, function(x) x/sum(x))
+
+# Family level
+taxa_names(ps.group2.family) <- tax_table(ps.group2.family)[,5]
+ps.group2.family.ra <- transform_sample_counts(ps.group2.family, function(x) x/sum(x))
+
+# Genus level
+# taxa_names(ps.dna.genus) <- tax_table(ps.dna.genus)[,6]
+ps.group2.genus.ra <- transform_sample_counts(ps.group2.genus, function(x) x/sum(x))
+ps.group2.genus.melt <- psmelt(ps.group2.genus.ra)
+
+df2 <- data.frame(tax_table(ps.group2.phy),
+                  taxprc = 100*taxa_sums(ps.group2.phy.ra)/
+                    length(sample_names(ps.group2.phy.ra)))
+df3 <- data.frame(tax_table(ps.group2.family), 
+                  taxprc = 100*taxa_sums(ps.group2.family.ra)/
+                    length(sample_names(ps.group2.family.ra)))
+df4 <- data.frame(tax_table(ps.group2.genus),
+                  taxprc = 100*taxa_sums(ps.group2.genus.ra)/
+                    length(sample_names(ps.group2.genus.ra)))
+df5 <- data.frame(tax_table(ps.group2),
+                  taxprc = 100*taxa_sums(ps.group2.ra)/
+                    length(sample_names(ps.group2.ra)))
+
+df.count <- data.frame(Included = c("All", "> 0.01%", "> 0.1%","> 1%"),
+                          Phylum = c(nrow(df2),sum(df2$taxprc > 0.01),sum(df2$taxprc > 0.1),sum(df2$taxprc > 1)),
+                          Family = c(nrow(df3),sum(df3$taxprc > 0.01),sum(df3$taxprc > 0.1),sum(df3$taxprc > 1)),
+                          Genus = c(nrow(df4),sum(df4$taxprc > 0.01),sum(df4$taxprc > 0.1),sum(df4$taxprc > 1)),
+                          ASV = c(nrow(df5),sum(df5$taxprc > 0.01),sum(df5$taxprc > 0.1),sum(df5$taxprc > 1)))
+
+# Count of ASV and taxa in Group 2 samples
+kable(df.count, row.names = F,digits = 1, caption = 'Abundance of phyla, family, genera and ASV in Group 2 samples')%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# Export to excel
+FileName <- paste(over_group_timepoint,"/Abundance of phyla, family, genera and ASV in Group 2 samples.xlsx", sep = "")
+write_xlsx(df.count,FileName)
+
+# Top 6 dominating phyla (prc abundance)
+kable(head(df2[order(df2$taxprc,decreasing = T),c("Kingdom","Phylum","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to phylum in Group 2 samples',col.names = c("Kingdom","Phylum","Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# Export to excel
+FileName <- paste(over_group_timepoint,"/Average abundance according to phylum in Group 2 samples.xlsx", sep = "")
+write_xlsx(df2,FileName)
+
+# Top 6 dominating family (prc abundance)
+kable(head(df3[order(df3$taxprc,decreasing = T),c("Kingdom","Phylum","Family", "taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to family in Group 2 samples',col.names = c("Kingdom","Phylum", "Family", "Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# Export to excel
+FileName <- paste(over_group_timepoint,"/Average abundance according to family in Group 2 samples.xlsx", sep = "")
+write_xlsx(df3,FileName)
+
+# Top 6 dominating (genera prc abundance)
+kable(head(df4[order(df4$taxprc,decreasing = T),c("Kingdom","Phylum","Class","Order","Family","Genus","taxprc")]), row.names = F,digits = 1, caption = 'Average abundance according to genus in Group 2 samples',col.names = c("Kingdom","Phylum","Class","Order","Family","Genus","Abundance (%)"))%>% 
+  kable_classic(full_width = F, position = "left")%>%  
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+
+# Export to excel
+FileName <- paste(over_group_timepoint,"/Average abundance according to genus in Group 2 samples.xlsx", sep = "")
+write_xlsx(df4,FileName)
+
+# clean environment
+#rm(list = ls(all = TRUE))
+
+```
+\FloatBarrier
+
+# 4. Groups composition 
+## 4.1. Top 10 Phyla - Group1 x Group2 composition by timepoint 
+```{r phylum_abundance_by_group, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4, fig.cap= 'Top 10 phylum abundance by group'}
+
+# Paths
+path <- here::here()
+over_Group_Timepoint = paste(path,"/overview_by_group_and_timepoint/",sep = "")
+
+# Load aglomerate data by phylum 
+ps <- readRDS("ps1.dna.phy.rds")
+
+# Transform absolute abundance and calculating relative abundance
+ps_ra <- transform_sample_counts(ps, function(x) x / sum(x))
+ps_ra_melt <- psmelt(ps_ra)
+
+# Color palette
+palette <- c('steelblue', 
+             'orange'
+             )
+
+# Top 10 Phyla
+Phylum.summary <- aggregate(Abundance~Group + Phylum, 
+                            data = ps_ra_melt, 
+                            FUN = mean)
+Phylum.summary.ordered <- Phylum.summary [order(Phylum.summary $ Abundance, decreasing = T),]
+
+top10_phy <- Phylum.summary.ordered %>%
+  group_by(Group) %>%
+  pull(Phylum) %>%
+  unique() %>%
+  head(n = 10)
+
+# fig (Boxplot top10 Phylum)
+ps_ra_melt $ Abundance_percent <- ifelse(ps_ra_melt$Abundance < 0.001, 0.1,ps_ra_melt$Abundance*100)
+
+# Boxplot
+F1 <- ggplot(ps_ra_melt[ps_ra_melt$Phylum %in% top10_phy,], 
+             aes(y = Phylum, x = Abundance_percent)) + 
+  geom_boxplot(position =position_dodge2(reverse = TRUE), aes(color = Group), alpha = 0.5) + 
+  geom_boxplot(position =position_dodge2(reverse = TRUE), aes(fill = Group), alpha = 0.5, outlier.shape = 21) +
+  facet_wrap(~ Timepoint, nrow = 1) +
+  scale_fill_manual(values = palette) + 
+  scale_color_manual(values = palette) + 
+  scale_x_log10() +
+  ylab("") +
+  xlab("Abundance (%)") +
+  theme_bw() + theme(axis.title = element_text(size = 10), axis.text.x = element_text(size = 8),legend.position = 'bottom',axis.text.y = element_text(face="italic",size = 8),
+  plot.margin = unit(c(1, 1, 1, 1), "lines")) # Adjust the image margins here (top, right, bottom, left)
+
+print(F1)
+
+# Legend
+g_legend<-function(a.gplot){ 
+  tmp <- ggplot_gtable(ggplot_build(a.gplot)) 
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box") 
+  legend <- tmp$grobs[[leg]] 
+  return(legend)} 
+mytheme <- theme(axis.title = element_text(size = 10), axis.text = element_text(size = 8)) + theme_bw()
+
+# plot legend
+F1_legend <- g_legend(F1 + geom_boxplot(aes(color=Group,fill=Group),alpha=0.5)+ 
+  theme_bw() + theme(axis.title = element_text(size = 10), 
+                     axis.text = element_text(size = 8), 
+                     axis.text.x=element_blank(), 
+                     axis.ticks.x=element_blank(), 
+                     legend.position = 'bottom'))
+
+# Save 
+FileName <- paste(over_Group_Timepoint,"/Top Phylum Abundance by group and timepoint.pdf", sep = "")
+ggsave(FileName, plot = F1, width = 180, height = 170, units = "mm", dpi = 300)
+
+FileName <- paste(over_Group_Timepoint,"/Top Phylum Abundance by group and timepoint.png", sep = "")
+ggsave(FileName, plot = F1, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Export to excel
+FileName <- paste(over_Group_Timepoint,"/Top Phylum Abundance by group and timepoint.xlsx", sep = "")
+write_xlsx(ps_ra_melt, FileName)
+
+# clean environment
+#rm(list = ls(all = TRUE))
+
+```
+\FloatBarrier
+
+## 4.2. Top 10 Family - Group1 x Group2 composition by timepoint
+```{r family_abundance_by_group, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4, fig.cap= 'Top 10 family abundance by group'}
+
+# path
+path <- here::here()
+over_Group_Timepoint = paste(path,"/overview_by_group_and_timepoint/",sep = "")
+
+# Load aglomerate data by family 
+ps <- readRDS("ps1.dna.family.rds")
+
+# Relative abundance values
+ps_ra <- transform_sample_counts(ps, function(x) x / sum(x))
+ps_ra_melt <- psmelt(ps_ra)
+
+# Color palette
+palette <- c("steelblue", 
+             "orange")
+
+# # Top 10 Families 
+family.summary <- aggregate(Abundance~Group+Family, data = ps_ra_melt, FUN = mean)
+family.summary.ordered <- family.summary[order(family.summary$Abundance,decreasing = T),]
+
+top10_fam <- family.summary.ordered %>%
+  group_by(Group) %>%
+  pull(Family) %>%
+  unique() %>%
+  head(n = 10)
+
+# Boxplot top family por Timepoint
+ps_ra_melt$Abundance_percent <- ifelse(ps_ra_melt$Abundance < 0.001, 0.1,ps_ra_melt$Abundance*100)
+
+F2 <- ggplot(ps_ra_melt[ps_ra_melt$Family %in% top10_fam,], aes(y = Family, x = Abundance_percent)) + 
+  geom_boxplot(position =position_dodge2(reverse = TRUE), aes(color = Group), alpha = 0.5) + 
+  geom_boxplot(position =position_dodge2(reverse = TRUE), aes(fill = Group), alpha = 0.5, outlier.shape = 21) +
+  facet_wrap(~ Timepoint, nrow = 1) +
+  scale_fill_manual(values = palette) + 
+  scale_color_manual(values = palette) + 
+  scale_x_log10() +
+  ylab("") +
+  xlab("Abundance (%)") +
+  theme_bw() + theme(axis.title = element_text(size = 10), axis.text.x = element_text(size = 8),legend.position = 'bottom',axis.text.y = element_text(face="italic",size = 8),
+  plot.margin = unit(c(1, 1, 1, 1), "lines")) # Adjust the image margins here (top, right, bottom, left)
+
+print(F2)
+
+# Legend
+g_legend<-function(a.gplot){ 
+  tmp <- ggplot_gtable(ggplot_build(a.gplot)) 
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box") 
+  legend <- tmp$grobs[[leg]] 
+  return(legend)} 
+mytheme <- theme(axis.title = element_text(size = 10), axis.text = element_text(size = 8)) + theme_bw()
+
+# plot legend
+F2_legend <- g_legend(F2 + geom_boxplot(aes(color=Group,fill=Group),alpha=0.5)+ 
+  theme_bw() + theme(axis.title = element_text(size = 10), 
+                     axis.text = element_text(size = 8), 
+                     axis.text.x=element_blank(), 
+                     axis.ticks.x=element_blank(), 
+                     legend.position = 'bottom'))
+
+# save
+FileName <- paste(over_Group_Timepoint,"/Top family abundance by group and timepoint.pdf", sep = "")
+ggsave(FileName, plot = F2, width = 180, height = 170, units = "mm", dpi = 300)
+
+FileName <- paste(over_Group_Timepoint,"/Top family abundance by group and timepoint.png", sep = "")
+ggsave(FileName, plot = F2, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Export to excel
+FileName <- paste(over_Group_Timepoint,"/Top family abundance by group and timepoint.xlsx", sep = "")
+write_xlsx(ps_ra_melt, FileName)
+
+# clean environment
+#rm(list = ls(all = TRUE))
+
+```
+\FloatBarrier
+
+## 4.3. Top 10 Genus - Group1 x Group2 composition by timepoint 
+```{r genus_abundance_by_group, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4, fig.cap= 'Top 10 genus abundance by group'}
+
+# path
+path <- here::here() 
+over_Group_Timepoint = paste(path,"/overview_by_group_and_timepoint/",sep = "")
+
+# Load aglomerate data by genus 
+ps <- readRDS("ps1.dna.genus.rds")
+
+# Abundance relative values
+ps_ra <- transform_sample_counts(ps, function(x) x / sum(x))
+ps_ra_melt <- psmelt(ps_ra)
+
+# Color palette
+palette <- c("steelblue", 
+             "orange")
+
+# Top 10 genus
+genus.summary <- aggregate(Abundance~Group+Genus, data = ps_ra_melt, FUN = mean)
+genus.summary.ordered <- genus.summary[order(genus.summary$Abundance,decreasing = T),]
+
+top10_genus <- genus.summary.ordered %>%
+  group_by(Group) %>%
+  pull(Genus) %>%
+  unique() %>%
+  head(n = 10) 
+
+# boxplot top genera by timepint
+ps_ra_melt$Abundance_percent <- ifelse(ps_ra_melt$Abundance < 0.001, 0.1,ps_ra_melt$Abundance*100)
+
+F3 <- ggplot(ps_ra_melt[ps_ra_melt$Genus %in% top10_genus,], aes(y = Genus, x = Abundance_percent)) + 
+  geom_boxplot(position =position_dodge2(reverse = TRUE), aes(color = Group), alpha = 0.5) + 
+  geom_boxplot(position =position_dodge2(reverse = TRUE), aes(fill = Group), alpha = 0.5, outlier.shape = 21) +
+  facet_wrap(~ Timepoint, nrow = 1) +
+  scale_fill_manual(values = palette) + 
+  scale_color_manual(values = palette) + 
+  scale_x_log10() +
+  ylab("") +
+  xlab("Abundance (%)") +
+  theme_bw() + theme(axis.title = element_text(size = 10), axis.text.x = element_text(size = 8),legend.position = 'bottom',axis.text.y = element_text(face="italic",size = 8),
+  plot.margin = unit(c(1, 1, 1, 1), "lines")) # Adjust the image margins here (top, right, bottom, left)
+
+print(F3)
+
+# Legend
+g_legend<-function(a.gplot){ 
+  tmp <- ggplot_gtable(ggplot_build(a.gplot)) 
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box") 
+  legend <- tmp$grobs[[leg]] 
+  return(legend)} 
+mytheme <- theme(axis.title = element_text(size = 10), axis.text = element_text(size = 8)) + theme_bw()
+
+# plot legend
+F3_legend <- g_legend(F3 + geom_boxplot(aes(color=Group,fill=Group),alpha=0.5)+ 
+  theme_bw() + theme(axis.title = element_text(size = 10), 
+                     axis.text = element_text(size = 8), 
+                     axis.text.x=element_blank(), 
+                     axis.ticks.x=element_blank(), 
+                     legend.position = 'bottom'))
+
+# save
+FileName <- paste(over_Group_Timepoint,"/Top genera gbundance by group and timepoint.pdf", sep = "")
+ggsave(FileName, plot = F3, width = 180, height = 170, units = "mm", dpi = 300)
+
+FileName <- paste(over_Group_Timepoint,"/Top genera abundance by group and timepoint.png", sep = "")
+ggsave(FileName, plot = F3, width = 180, height = 170, units = "mm", dpi = 300)
+
+# Export to excel
+FileName <- paste(over_Group_Timepoint,"/Top genera abundance by group and timepoint.xlsx", sep = "")
+write_xlsx(ps_ra_melt, FileName)
+
+# clean environment
+rm(list = ls(all = TRUE))
+
+```
+\FloatBarrier
+
+## 5.0 Session info
+```{r session_info, eval=TRUE, echo=F}
+
+sessionInfo()
+
+```

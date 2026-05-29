@@ -1,0 +1,564 @@
+---
+title: 'In this field, insert the project title'
+author: 'In this field, insert the author(s) of the analysis'
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 3
+    latex_engine: xelatex
+  word_document:
+    toc: yes
+    toc_depth: 5
+  html_document:
+    df_print: paged
+    theme: cerulean
+    highlight: haddock
+    toc: yes
+    toc_depth: 3
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+    code_folding: show
+always_allow_html: yes
+header-includes:
+  - \usepackage{float}
+  - \usepackage{placeins}           # \FloatBarrier
+  - \usepackage[font=small]{caption} # Legends 
+---
+
+================================================================================ 
+# Study description:
+
+~ Include here a brief description of the study ~
+
+================================================================================
+
+# DIFFERENTIAL ABUNDANCE ANALYSIS IN TIME SERIES STUDIES
+
+## 1. Load Libraries
+```{r libraries_diffAbund, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+
+library(gtsummary)
+library(writexl)
+library(dplyr)
+library(phyloseq)
+library(nlme)
+library(vegan)
+library(compositions)
+library(ggplot2)
+library(lme4)
+library(reshape2) 
+library(vegan)
+library(ade4)
+library(plotly)
+library(pracma) 
+library(fpc) 
+library(tidyverse)
+library(cluster)
+library(RColorBrewer)
+library(ape)
+library(gplots)
+library(RColorBrewer)
+library(pheatmap)
+library(Maaslin2)
+library(ggpicrust2)
+library(microbiome)
+library(file2meco)
+library(microbiomeutilities)
+library(gridExtra)
+library(GGally)
+library(broom)
+library(broom.mixed)
+library(kableExtra)
+library(emmeans)
+library(cardx)
+library(here)
+library(readr)
+library(forcats)
+library(grid) 
+library(combinat)
+library(tidyr)
+library(tibble)
+
+```
+
+## 2. Differential Abundance Analysis
+
+We performed the differential abundance analysis at genus level with MaAsLin2
+```{r dataPrep_maaslin, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Paths
+path <- here::here()
+Dif_abundance = paste(path,"/Differential_abundance_genus/",sep = "")
+dir.create(Dif_abundance)
+
+# load phyloseq data and adjust
+ps0 <- readRDS("ps1.dna.genus.rds")
+ps <- format_to_besthit(ps0)
+
+# preparing the feature table from abundance table
+feature_table <- as.data.frame(otu_table(ps))
+
+# extract metadata from ps
+metadata <- microbiome::meta(ps)
+
+# creating an interaction variable (Maaslin2 does not accept interaction in modeling)
+metadata$Group_Timepoint_interaction <- interaction(metadata$Group, metadata$Timepoint)
+
+# check if the samples are in the columns and transpose the table.
+if (taxa_are_rows(ps)) {
+  feature_table <- t(feature_table)
+}
+
+# clean environment
+#rm(list = ls(all = TRUE))
+
+```
+
+```{r run_maaslin, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+
+# run MaAsLin2 
+fit_data <- Maaslin2(
+    input_data = feature_table,
+    input_metadata = metadata,
+    output = Dif_abundance,
+    fixed_effects = c("Group", "Timepoint", "Group_Timepoint_interaction"),
+    random_effects = "Animal",
+    reference = c("Group,Group1;Timepoint,TP1;Group_Timepoint_interaction,Group1.TP1"), # Insert here, baseline information of group and timepoint to comparisons
+    normalization = "CLR",
+    transform = "LOG",      # Logarithmic transformation
+    analysis_method = "LM", # Linear model
+    min_prevalence = 0.1,
+    min_abundance = 0.1,
+    correction = "BH",
+    standardize = TRUE,
+    cores = 8
+) #  Maaslin2 output: "significant_results.tsv" file or "fit_data$results"
+
+# save Maaslin2 data
+save(fit_data, file = file.path(Dif_abundance, "Maaslin2.RData"))
+
+# clean environment
+#rm(list = ls(all = TRUE))
+
+```
+
+## 2.1. Global differential abundance analysis including group, timepoint and group vs timepoint interaction
+```{r diffAbund_global, eval=TRUE, message=FALSE, warning=FALSE, echo=FALSE, fig.align='center', fig.width=8, fig.height=16}
+
+# paths
+path <- here::here()
+Dif_abundance <- file.path(path, "Differential_abundance_genus")
+
+load('Maaslin2.RData')
+
+# read significant results
+res <- read_tsv(
+  file.path(Dif_abundance, "significant_results.tsv"),
+  show_col_types = FALSE
+)
+
+# baseline levels (reference group) for each variable.
+ref_values <- c(
+  Group                    = "Group1",
+  Group_Timepoint_interaction    = "Group1.TP1",
+  Timepoint                = "TP1"
+) # Adjust these values according to your analysis (this is the level against which the coefficient was estimated).
+
+# data preparation and creation of comparison labels
+df_plot <- res %>%
+  filter(metadata != "Group") %>% 
+  mutate(
+    taxon      = feature,
+    coef       = coef,
+    direction  = if_else(coef >= 0, "Positive LFC", "Negative LFC"),
+    comparison = paste0(
+      metadata, ": ", 
+      value, 
+      " vs ", 
+      ref_values[metadata]
+    )
+  ) %>%
+  group_by(comparison) %>%
+  slice_max(order_by = abs(coef), n = 10, with_ties = FALSE) %>%
+  ungroup()
+
+# horizontal bar plot
+p <- ggplot(df_plot, aes(
+    y    = reorder(taxon, abs(coef)),
+    x    = coef,
+    fill = direction
+  )) +
+  geom_bar(stat = "identity", width = 0.5, color = "black") +
+  labs(
+    y     = "",
+    x     = "Log fold change",
+    title = "Differential Abundance (MaAsLin2) - Top genera"
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Positive LFC" = "coral", 
+      "Negative LFC" = "darkslategray3"
+    ),
+    name = ""
+  ) +
+  facet_wrap(~ comparison, scales = "free_y", ncol = 1) +
+  theme_bw() +
+  theme(
+    plot.title       = element_text(hjust = 0),
+    axis.text.y      = element_text(face = "italic", size = 8),
+    axis.text.x      = element_text(size = 10),
+    strip.text.x     = element_text(size = 9, face = "bold"),
+    plot.margin      = unit(c(1, 1, 1, 1), "lines"),
+    legend.position  = "bottom"
+  )
+
+print(p) # display the plot
+
+# Save
+ggsave(
+  filename = file.path(Dif_abundance, "masalin2_diffabund_comparisons.png"),
+  plot     = p,
+  width    = 8,
+  height   = 16,
+  dpi      = 300
+)
+
+ggsave(
+  filename = file.path(Dif_abundance, "masalin2_diffabund_comparisons.pdf"),
+  plot     = p,
+  width    = 8,
+  height   = 16,
+  dpi      = 300
+)
+
+```
+\FloatBarrier
+
+## 2.2. Visualization of effect size in a Group vs Timepoint Interaction
+```{r diffAbund_dataPrep_Vizu, eval=TRUE, message=FALSE, warning=FALSE, echo=FALSE, fig.align='center', fig.width=8, fig.height=16}
+
+# paths
+path <- here::here()
+Dif_abundance <- file.path(path, "Differential_abundance_genus")
+
+# load Maaslin2 object
+load("Maaslin2.RData")
+
+# read significant results
+res <- read_tsv(
+  file.path(Dif_abundance, "significant_results.tsv"),
+  show_col_types = FALSE
+)
+# data for interaction heatmap
+interaction_res <- res %>%
+  filter(metadata == "Group_Timepoint_interaction") %>%   
+  mutate(
+    taxon = feature,
+    comparison = value,
+    LFC = coef
+  )
+
+# select taxa with strongest differential effects
+top_taxa <- interaction_res %>%
+  group_by(taxon) %>%
+  summarise(max_effect = max(abs(LFC))) %>%
+  arrange(desc(max_effect)) %>%
+  slice(1:30) %>%
+  pull(taxon)
+
+heatmap_data <- interaction_res %>%
+  filter(taxon %in% top_taxa) %>%
+  mutate(
+    taxon = factor(taxon, levels = rev(unique(taxon)))
+  )
+
+
+```
+
+```{r maaslin2_heatmap_interactionPlot, eval=TRUE, message=FALSE, warning=FALSE, echo=FALSE, fig.align='center', fig.width=8, fig.height=16}
+
+# Interaction heatmap plot
+p_heatmap <- ggplot(
+  heatmap_data,
+  aes(
+    x = comparison,
+    y = taxon,
+    fill = LFC
+  )
+) +
+  geom_tile(color = "white") +
+
+  scale_fill_gradient2(
+    low = "coral",
+    mid = "white",
+    high = "darkslategray3",
+    midpoint = 0,
+    name = "Log fold change"
+  ) +
+
+  labs(
+    x = "Group-Time comparison",
+    y = "",
+    title = "MaAsLin2 – Interaction heatmap (Group × Timepoint)"
+  ) +
+
+  theme_bw() +
+
+  theme(
+    plot.title = element_text(hjust = 0),
+    axis.text.y = element_text(
+      face = "italic",
+      size = 8
+    ),
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1
+    ),
+    legend.position = "bottom",
+    panel.grid.major = ggplot2::element_blank()
+  )
+
+print(p_heatmap) # display heatmap plot
+
+# save heatmap
+ggsave(
+  filename = file.path(
+    Dif_abundance,
+    "Maaslin2_interaction_heatmap.png"
+  ),
+  plot = p_heatmap,
+  width = 10,
+  height = 8,
+  dpi = 300
+)
+
+ggsave(
+  filename = file.path(
+    Dif_abundance,
+    "Maaslin2_interaction_heatmap.pdf"
+  ),
+  plot = p_heatmap,
+  width = 10,
+  height = 8,
+  dpi = 300
+)
+
+```
+
+## 2.3. Temporal trajectories at the genus level - clustered visualization
+```{r temporalTrajectories_visu, eval=TRUE, message=FALSE, warning=FALSE, echo=FALSE, fig.align='center', fig.width=8, fig.height=16}
+
+# paths
+path <- here::here()
+Dif_abundance <- file.path(path, "Differential_abundance_genus")
+
+# load Maaslin2 object
+load(file.path(Dif_abundance, "Maaslin2.RData"))
+
+# identify significant taxa from MaAslin2 results
+sig_taxa <- fit_data$results %>%
+  dplyr::filter(qval < 0.25) %>%  # MaAslin uses q < 0.25 as default
+  dplyr::pull(feature) %>%
+  unique()
+
+# extract adjusted values from each sample of the MaAslin2 model
+fitted_sig <- fit_data$fitted[rownames(fit_data$fitted) %in% sig_taxa,]
+ 
+# convert fitted matrix to tidy format
+fitted_df <- fitted_sig %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("taxon") %>%
+  tidyr::pivot_longer(
+    -taxon,
+    names_to = "Sample",
+    values_to = "log_abundance"
+  )
+
+# add sample metadata
+metadata <- microbiome::meta(ps)
+metadata$Sample <- rownames(metadata)
+
+fitted_df <- fitted_df %>%
+  dplyr::left_join(metadata, by="Sample")
+
+# export df to excel
+write_xlsx(fitted_df, file.path(Dif_abundance, "fitted_values.xlsx"))
+
+# calculate mean predicted abundance per condition
+predicted <- fitted_df %>%
+  dplyr::group_by(taxon, Group, Timepoint) %>%
+  dplyr::summarise(
+    log_abundance = mean(log_abundance, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# convert to taxa × condition matrix
+pred_matrix <- predicted %>%
+  dplyr::mutate(sample = paste(Group, Timepoint, sep = "_")) %>%
+  dplyr::select(taxon, sample, log_abundance) %>%
+  tidyr::pivot_wider(
+    names_from = sample,
+    values_from = log_abundance
+  ) %>%
+  tibble::column_to_rownames("taxon") %>%
+  as.matrix()
+
+# compute row Z-score (standardize taxa profiles)
+pred_matrix <- t(scale(t(pred_matrix)))
+pred_matrix[is.na(pred_matrix)] <- 0
+
+# hierarchical clustering of taxa
+row_clust <- stats::hclust(
+  stats::dist(pred_matrix)
+)
+
+k <- 3 # Define the number of clusters (according to your data analysis)
+
+clusters <- cutree(row_clust, k = k)
+
+# reorder matrix according to clustering
+pred_matrix <- pred_matrix[row_clust$order, ]
+
+# convert clustered matrix to dataframe
+cluster_df_plot <- as.data.frame(pred_matrix)
+
+cluster_df_plot$taxon <- rownames(cluster_df_plot)
+
+cluster_df_plot$cluster <- clusters[rownames(pred_matrix)]
+
+cluster_df_plot$taxon <- factor(
+  cluster_df_plot$taxon,
+  levels = rownames(pred_matrix)
+)
+
+# convert matrix to long format
+cluster_df_plot <- cluster_df_plot %>%
+  tidyr::pivot_longer(
+    -c(taxon, cluster),
+    names_to = "sample",
+    values_to = "zscore"
+  ) %>%
+  tidyr::separate(
+    sample,
+    into = c("Group","Timepoint"),
+    sep = "_"
+  )
+
+# enforce plotting order
+cluster_df_plot <- cluster_df_plot %>%
+  dplyr::mutate(
+    Group = factor(
+      Group,
+      levels = c("Group1","Group2")
+    ),
+    Timepoint = factor(
+      Timepoint,
+      levels = c("TP1","TP2","TP3")
+    ),
+    cluster = factor(cluster)
+  )
+
+# create cluster labels
+cluster_df_plot <- cluster_df_plot %>%
+  dplyr::mutate(
+    cluster_label = factor(
+      cluster,
+      levels = c(1,2,3,4),
+      labels = c(
+        "Cluster 1",
+        "Cluster 2",
+        "Cluster 3",
+        "Cluster 4"
+        )
+    )
+  )
+
+```
+
+```{r maaslin2_Test, eval=TRUE, message=FALSE, warning=FALSE, echo=FALSE, fig.align='center', fig.width=8, fig.height=16}
+
+# clustered longitudinal heatmap plot (using MaAsLin2 fitted values)
+p_cluster <- ggplot(
+  cluster_df_plot,
+  aes(
+    x = Timepoint,
+    y = taxon,
+    fill = zscore
+  )
+) +
+  geom_tile(color = "white") +
+
+  facet_grid(
+    cluster_label ~ Group,
+    scales = "free_y",
+    space = "free_y"
+  ) +
+
+  scale_fill_distiller(
+  palette = "RdBu",
+  direction = -1,
+  name = "Row Z-score"
+) +
+
+  labs(
+    x = "Timepoint",
+    y = "Genus",
+    title = "Clustered longitudinal heatmap - genera trajectory"
+  ) +
+
+  theme_bw() +
+
+  theme(
+    axis.text.y = element_text(face = "italic", size = 8),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    strip.text = element_text(face = "bold"),
+    plot.title = element_text(hjust = 0),
+    panel.spacing.x = grid::unit(0, "lines"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+
+print(p_cluster) # display heatmap plot
+
+# save plot
+ggsave(
+  filename = file.path(
+    Dif_abundance,
+    "Maaslin2_longitudinal_clustered_heatmap.png"
+  ),
+  plot = p_cluster,
+  width = 10,
+  height = 12,
+  dpi = 300
+)
+
+ggsave(
+  filename = file.path(
+    Dif_abundance,
+    "Maaslin2_longitudinal_clustered_heatmap.pdf"
+  ),
+  plot = p_cluster,
+  width = 10,
+  height = 12,
+  dpi = 300
+)
+
+```
+Genus-level taxa identified by MaAsLin2 were grouped by hierarchical clustering based on their longitudinal Z-score profiles. Clusters represent taxa with shared temporal trajectories across Group1 and Group2 groups.
+
+[The values below should be adjusted according to the analysis]
+
+Cluster 1: Strong increase at D103 after low early abundance 
+Cluster 2: Shared decrease toward D103 in PF and DFI
+Cluster 3: Evidence of enrichment in the DFI group
+
+### 3. Session info
+```{r session_info, eval=TRUE, echo=F}
+
+sessionInfo()
+
+```
+
