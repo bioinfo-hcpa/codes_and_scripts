@@ -1,0 +1,422 @@
+---
+title: 'In this field, insert the project title'
+author: 'In this field, insert the author(s) of the analysis'
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 3
+    latex_engine: xelatex
+  word_document:
+    toc: yes
+    toc_depth: 5
+  html_document:
+    df_print: paged
+    theme: cerulean
+    highlight: haddock
+    toc: yes
+    toc_depth: 3
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+    code_folding: show
+always_allow_html: yes
+header-includes:
+  - \usepackage{float}
+  - \usepackage{placeins}           # \FloatBarrier
+  - \usepackage[font=small]{caption} # Legends 
+---
+================================================================================ 
+# Study description:
+
+~ Include here a brief description of the study ~
+
+================================================================================
+
+# DIFFERENTIAL ABUNDANCE ANALYSIS IN CROSS SECTIONAL STUDIES
+
+## 1. Load libraries
+```{r libraries_diffAbund, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+
+library(ANCOMBC)
+library(tidyverse)
+library(DT)
+options(DT.options = list(
+  initComplete = JS("function(settings, json) {",
+  "$(this.api().table().header()).css({'background-color': 
+  '#000', 'color': '#fff'});","}")))
+library(writexl)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+```
+
+## 2. Analysis of Compositions of Microbiomes with Bias Correction 2 (ANCOMBC2)
+We performed the differential abundance analysis at genus level with ANCOMBC2
+```{r run_ANCOMBC2, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Paths
+path <- here::here()
+Dif_abundance = paste(path,"/Differential_abundance_genus/",sep = "")
+dir.create(Dif_abundance)
+
+# Load phyloseq data 
+ps <- readRDS("ps1.rds") # ps1.rds is the phyloseq object in which ASVs were filtered based on prevalence and abundance. It is created in script 2 (overview).
+
+set.seed(123) # Always run this line before differential abundance analysis
+
+# Run ANCOM-BC
+output_genus = ancombc2(data = ps, assay_name = "counts", tax_level = "Genus", 
+                  fix_formula = "Group", rand_formula = NULL, 
+                  p_adj_method = "BH", pseudo_sens = TRUE, 
+                  prv_cut = 0.1, lib_cut = 1000, s0_perc = 0.05, 
+                  group = "Group", struc_zero = TRUE, neg_lb = TRUE, 
+                  alpha = 0.05, n_cl = 20, verbose = TRUE,
+                  global = TRUE, pairwise = TRUE, dunnet = TRUE, trend = FALSE, 
+                  iter_control = list(tol = 1e-2, max_iter = 20, 
+                                      verbose = TRUE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = lme4::lmerControl(),
+                  mdfdr_control = list(fwer_ctrl_method = "BH", B = 100), 
+                  trend_control = list(contrast = list(matrix(c(1, 0, -1, 1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE),
+                                                       matrix(c(-1, 0, 1, -1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE),
+                                                       matrix(c(1, 0, 1, -1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE)),
+                                       node = list(2, 2, 1),
+                                       solver = "ECOS",
+                                       B = 100))
+# Save
+save(file = "ANCOMBC.RData", list = "output_genus")
+
+results <- output_genus$res
+
+# Save results
+write.csv(results, 
+          file = "results_ancombc.csv", 
+          row.names = FALSE) 
+
+# clear environment
+rm(list = ls(all = TRUE))
+
+```
+
+### 2.1. Genus level
+```{r struc_zeros, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Path
+path <- here::here()
+Dif_abundance = paste(path,"/Differential_abundance_genus/",sep = "")
+
+load('ANCOMBC.RData')
+
+# Structural zeros 
+tab_zero = output_genus$zero_ind
+tab_zero %>%
+    datatable(caption = "The detection of structural zeros on Genus level")
+FileName <- paste(Dif_abundance,"/Structural_zeros_genus.xlsx", sep = "")
+write_xlsx(tab_zero, FileName)
+
+```
+
+### 2.1.1. Overall - Primary results 
+```{r ANCOMBC2_resPrim_heatmap, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.cap='Global differential abundance (ANCOM-BC2) – taxa significant in any group contrast', fig.align='center', fig.width=8, fig.height=11}
+
+# Primary analysis 
+
+# Path
+path    <- here::here()
+outdir  <- file.path(path, 'Differential_abundance_genus')
+dir.create(outdir, showWarnings = FALSE, recursive = TRUE)
+
+# Primary LFCs and global test results
+res_prim   <- output_genus$res
+
+df_group = res_prim %>%
+    dplyr::select(taxon, contains("Group")) 
+
+# Groups definition - IMPORTANT: Adjust variable names accordingly to the project
+group_ref <- 'Group1' # [insert the identification of reference/baseline group to compare]
+group_exp1 <- paste0('Group',' ', 2) # [insert here the identification of experimental group]
+
+df = df_group %>%
+    dplyr::filter(paste0("diff_Group", group_ref) == 1 | 
+                  paste0("diff_Group", group_exp1) == 1 ) %>%
+    dplyr::mutate(lfc1 = ifelse(paste0("diff_Group", group_ref) == 1, 
+                                round(paste0("lfcGroup", group_ref), 2), 0),    
+                  lfc2 = ifelse(paste0("diff_Group", group_exp1) == 1, 
+                                round(paste0("lfcGroup", group_exp1), 2), 0)) %>%
+    tidyr::pivot_longer(cols = lfc1:lfc2, 
+                        names_to = "group", values_to = "value") %>%
+    dplyr::arrange(taxon)
+
+#=========================================================================================================================
+
+# Plot
+# Compute gradient limits
+lo  <- floor(min(df$value, na.rm = TRUE))
+up  <- ceiling(max(df$value, na.rm = TRUE))
+mid <- (lo + up) / 2
+
+# Horizontal bar plot
+bar_global = df %>%
+  ggplot(aes(y = reorder(taxon, abs(value)), x = value, 
+             fill = ifelse(value >= 0, "Positive LFC", "Negative LFC"))) +
+  geom_bar(stat = "identity", width = 0.5, color = "black") +
+  labs(y = "", x = "Abundance", title = "") +
+  scale_fill_manual(values = c("Positive LFC" = "darkslategray3", "Negative LFC" = "coral"),
+                    name = "") +
+  facet_wrap(~group, nrow = 3) +  
+  theme_bw() +
+  theme(
+    plot.title = element_text(hjust = 0),
+    axis.text.y = element_text(face = "italic", size = 7),
+    axis.text.x = element_text(size = 10),
+    strip.text.x = element_text(size = 8),
+    plot.margin = unit(c(1, 1, 1, 1), "lines")
+  )
+
+bar_global # display the plot
+
+# Save
+ggsave(file.path(outdir, 'ANCOMBC2_primaryResults_barchart.pdf'),
+       bar_global, width = 180, height = 200, units = "mm", dpi = 300)
+ggsave(file.path(outdir, 'ANCOMBC2_primaryResults_barchart.png'),
+       bar_global, width = 180, height = 200, units = "mm", dpi = 300)
+
+# clear environment
+rm(list = ls(all = TRUE))
+
+```
+
+### 2.1.2. Global results
+```{r ANCOMBC2_global_heatmap, eval=FALSE, echo=FALSE, message=FALSE, warning=FALSE, fig.cap='Global differential abundance (ANCOM-BC2) – taxa significant in any group contrast', fig.align='center', fig.width=8, fig.height=11}
+
+# Global results - If there are at least 3 experimental groups in the study, run the code below
+
+load('ANCOMBC.RData')
+
+# Path
+path    <- here::here()
+outdir  <- file.path(path, 'Differential_abundance_genus')
+dir.create(outdir, showWarnings = FALSE, recursive = TRUE)
+
+# Pull in primary LFCs and global test results
+res_prim   <- output_genus$res
+res_global <- output_genus$res_global
+
+# Groups definition
+group_ref  <- "Group 1" # [insert the identification of reference/baseline group to compare]
+group_exp1 <- "Group 2" # [insert the identification of experimental group]
+group_exp2 <- "Group 3"  # opcional 
+
+# Join per‐group LFCs to the global diff_abn flag
+df <- res_prim %>%
+  select(taxon,
+    lfc1 = paste0("lfc_Group", group_exp1),
+    lfc2 = paste0("lfc_Group", group_exp2))
+  ) %>%
+  left_join(
+    res_global %>% transmute( taxon,
+                              diff_abn  = diff_abn,
+                              passed_ss = passed_ss),
+    by = "taxon"
+  ) %>%
+  # Keep only those taxa flagged in the global test:
+  filter(diff_abn == TRUE) %>%
+  # Build long form for values and colors
+  dplyr::mutate(
+    lfc1 = round(lfc1, 2),
+    lfc2 = round(lfc2, 2),
+    col1 = ifelse(passed_ss == TRUE, "aquamarine3", "black"),
+    col2 = ifelse(passed_ss == TRUE, "aquamarine3", "black")
+  ) %>%
+  pivot_longer(cols = starts_with("lfc"),
+               names_to  = "grp", values_to = "value") %>%
+    pivot_longer(cols = starts_with("col"), 
+                 names_to  = "grp2", values_to = "color") %>%
+  filter(sub("lfc", "col", grp) == grp2) %>%
+  select(taxon, grp, value, color) %>%
+  # Group labels
+  mutate(group = recode(grp,
+      lfc1 = paste0(group_exp1, " – ", group_ref),
+      lfc2 = paste0(group_exp2, " – ", group_ref)
+    ),
+    group = factor(group, levels = c(
+      paste0(group_exp1, " – ", group_ref),
+      paste0(group_exp2, " – ", group_ref)
+    ))
+  ) %>% 
+  # Order taxa within each facet
+  group_by(group) %>%
+  arrange(value) %>%
+  mutate(taxon = factor(taxon, levels = unique(taxon))) %>%
+  ungroup()
+
+#=========================================================================================================================
+
+# Plot 
+# Compute gradient limits
+lo  <- floor(min(df$value, na.rm = TRUE))
+up  <- ceiling(max(df$value, na.rm = TRUE))
+mid <- (lo + up) / 2
+
+# Horizontal bar plot
+bar_global = df %>%
+  ggplot(aes(y = reorder(taxon, abs(value)), x = value, 
+             fill = ifelse(value >= 0, "Positive LFC", "Negative LFC"))) +
+  geom_bar(stat = "identity", width = 0.5, color = "black") +
+  labs(y = "", x = "Abundance", title = "") +
+  scale_fill_manual(values = c("Positive LFC" = "darkslategray3", "Negative LFC" = "coral"),
+                    name = "") +
+  facet_wrap(~group, nrow = 3) +  
+  theme_bw() +
+  theme(
+    plot.title = element_text(hjust = 0),
+    axis.text.y = element_text(face = "italic", size = 7),
+    axis.text.x = element_text(size = 10),
+    strip.text.x = element_text(size = 8),
+    plot.margin = unit(c(1, 1, 1, 1), "lines")
+  )
+
+bar_global # display the plot
+
+# saving bar_global
+ggsave(file.path(outdir, 'ANCOMBC2_global_barchart.pdf'),
+       bar_global, width = 180, height = 200, units = "mm", dpi = 300)
+ggsave(file.path(outdir, 'ANCOMBC2_global_barchart.png'),
+       bar_global, width = 180, height = 200, units = "mm", dpi = 300)
+
+# clean environment
+rm(list = ls(all = TRUE))
+
+```
+\FloatBarrier
+
+### 2.1.3. Pairwise results
+```{r ANCOMBC2_pairwise_heatmap, eval=FALSE, echo=FALSE, message=FALSE, warning=FALSE, fig.cap='Pairwise differential abundance (ANCOM-BC2) – all group–group contrasts',fig.align='center', fig.width=8, fig.height=7}
+
+# Pairwise comparison - If there are at least 3 experimental groups in the study, run the code below
+
+load('ANCOMBC.RData')
+
+# Get pairwise results
+res_pair <- output_genus$res_pair
+
+# Build df_fig_pair1: extract LFCs where diff==1
+df_fig_pair1 <- res_pair %>% dplyr::filter(
+  paste0("diff_Group", group_ref)  == 1|
+  paste0("diff_Group", group_exp1) == 1 |
+  paste0("diff_Group", group_exp2) == 1
+  ) %>%
+  dplyr::mutate(
+    lfc1 = ifelse(paste0("diff_Group", group_ref) == 1,
+      round(paste0("lfc_Group", group_ref), 2), 0),
+    lfc2 = ifelse(paste0("diff_Group", group_exp1) == 1,
+      round(paste0("lfc_Group", group_exp1), 2), 0),
+    lfc3 = ifelse(paste0("diff_Group", group_exp2) == 1,
+      round(paste0("lfc_Group", group_exp2), 2), 0)
+  ) %>%
+  tidyr::pivot_longer(
+    cols      = lfc1:lfc3,
+    names_to  = "group",
+    values_to = "value"
+  ) %>%
+  dplyr::arrange(taxon)
+
+# Build df_fig_pair2: extract colors where passed_ss & diff==1
+df_fig_pair2 <- res_pair %>%
+  dplyr::filter(
+    !!rlang::sym(paste0("diff_Group", group_ref))  == 1 |
+    !!rlang::sym(paste0("diff_Group", group_exp1)) == 1 |
+    !!rlang::sym(paste0("diff_Group", group_exp2)) == 1
+  ) %>%
+  dplyr::mutate(
+    lfc1 = ifelse(
+      paste0("passed_ss_Group", group_ref) == 1 &
+      paste0("diff_Group", group_ref) == 1,
+      "aquamarine3", "black"),
+    lfc2 = ifelse(
+      paste0("passed_ss_Group", group_exp1) == 1 &
+      paste0("diff_Group", group_exp1) == 1,
+      "aquamarine3", "black"),
+    lfc3 = ifelse(
+      !!rlang::sym(paste0("passed_ss_Group", group_exp2)) == 1 &
+      !!rlang::sym(paste0("diff_Group", group_exp2)) == 1,
+      "aquamarine3", "black")
+  ) %>%
+  tidyr::pivot_longer(
+    cols      = lfc1:lfc3,
+    names_to  = "group",
+    values_to = "color"
+  ) %>%
+  dplyr::arrange(taxon)
+
+# Join values and colors
+df_fig_pair <- df_fig_pair1 %>%
+  dplyr::left_join(df_fig_pair2, by = c("taxon", "group"))
+
+# Recode and factor the group labels
+df_fig_pair$group <- dplyr::recode(df_fig_pair$group,
+  lfc1 = paste0(group_ref,  " - baseline"),
+  lfc2 = paste0(group_exp1, " - ", group_ref),
+  lfc3 = paste0(group_exp2, " - ", group_ref)
+)
+df_fig_pair$group <- factor(df_fig_pair$group,
+  levels = c(
+    paste0(group_ref,  " - baseline"),
+    paste0(group_exp1, " - ", group_ref),
+    paste0(group_exp2, " - ", group_ref)
+  )
+)
+
+#=========================================================================================================================
+
+# Plot
+# Compute gradient limits
+lo  <- floor(min(df_fig_pair$value, na.rm = TRUE))
+up  <- ceiling(max(df_fig_pair$value, na.rm = TRUE))
+mid <- (lo + up) / 2
+
+# Horizontal pairwise barplot
+bar_pair2 = df_fig_pair %>%
+  ggplot(aes(y = reorder(taxon, abs(value)), x = value, 
+             fill = ifelse(value >= 0, "Positive LFC", "Negative LFC"))) +
+  geom_bar(stat = "identity", width = 0.5, color = "black") +
+  labs(y = "", x = "Abundance", title = "") +
+  scale_fill_manual(values = c("Positive LFC" = "darkslategray3", "Negative LFC" = "coral"),
+                    name = "") +
+  facet_wrap(~group, nrow = 3) +  # <--- ADD the plus sign here
+  theme_bw() +
+  theme(
+    plot.title = element_text(hjust = 0),
+    axis.text.y = element_text(face = "italic", size = 7),
+    axis.text.x = element_text(size = 10),
+    strip.text.x = element_text(size = 8),
+    plot.margin = unit(c(1, 1, 1, 1), "lines")
+  )
+
+bar_pair2 # Display the plot
+
+# Save
+ggsave(file.path(outdir, 'ANCOMBC2_pairwise_barchart2.pdf'),
+       bar_pair2, width = 180, height = 170, units = "mm", dpi = 300)
+ggsave(file.path(outdir, 'ANCOMBC2_pairwise_barchart2.png'),
+       bar_pair2, width = 180, height = 170, units = "mm", dpi = 300)
+
+# clear environment
+rm(list = ls(all = TRUE))
+
+```
+
+## 3. Session info
+```{r session_info, eval=TRUE, echo=FALSE}
+
+sessionInfo()
+
+```

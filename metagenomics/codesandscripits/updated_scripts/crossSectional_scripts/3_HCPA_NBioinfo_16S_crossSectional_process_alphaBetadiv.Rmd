@@ -1,0 +1,478 @@
+---
+title: 'In this field, insert the project title'
+author: 'In this field, insert the author(s) of the analysis'
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 3
+    latex_engine: xelatex
+  word_document:
+    toc: yes
+    toc_depth: 5
+  html_document:
+    df_print: paged
+    theme: cerulean
+    highlight: haddock
+    toc: yes
+    toc_depth: 3
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+    code_folding: show
+always_allow_html: yes
+header-includes:
+  - \usepackage{float}
+  - \usepackage{placeins}           # \FloatBarrier
+  - \usepackage[font=small]{caption} # Legends
+---
+
+# Study description:
+
+
+
+# PROCESSING - ALPHA AND BETA DIVERSITY ANALYSIS IN CROSS SECTIONAL STUDIES
+
+# 1. Load libraries
+```{r loadLibraries, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+
+## Load libraries
+library(phyloseq)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(knitr)
+library(kableExtra)
+library(broom)
+library(forcats)
+library(writexl)   
+library(grid)
+library(ggpubr) 
+library(compositions)   
+library(vegan)         
+library(ape)
+library(here)
+
+```
+
+# 2. Alpha diversity
+## 2.1. Shannon index
+```{r alpha_shannon_by_group, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.cap='Boxplot of alpha diversity – Shannon diversity index by Group',fig.align='center', fig.width=6, fig.height=4}
+
+# Path
+path      <- here::here()
+alpha_div <- file.path(path, 'alpha_div')
+dir.create(alpha_div, showWarnings = FALSE, recursive = TRUE)
+
+# Phyloseq object
+# ps1.rds is the phyloseq object in which ASVs were filtered based on prevalence and abundance. It is created in script #2.
+ps <- readRDS(file.path(path, 'ps1.rds'))
+
+#===============================================================================================================================
+
+# Removing outliers, if necessary
+#ps.no <- prune_samples(sample_names(ps) != "HIDRO(10)5", ps)
+
+# If outliers are removed, remember to use the phyloseq object created below for further analysis
+#saveRDS(ps.no, file.path(path, 'ps1.no_outlier.rds'))
+
+#===============================================================================================================================
+
+# color palette definition
+palette <- c(
+  'Group 1'     = 'steelblue',
+  'Group 2'     = 'orange'
+)
+
+# Shannon index
+alpha_df <- estimate_richness(ps, measures = "Shannon") %>%    # if there is an outlier: replace "ps" object > "ps.no".
+  rownames_to_column(var = "Sample") %>%
+  left_join(
+    as(sample_data(ps), "data.frame") %>% rownames_to_column(var = "Sample"),
+    by = "Sample"
+  )
+
+# Summary per group
+alpha_sum <- alpha_df %>%
+  group_by(Group) %>%
+  summarise(
+    `Samples (n)` = n(),
+    Mean          = mean(Shannon),
+    SD            = sd(Shannon),
+    .groups       = 'drop'
+  )
+
+# Summary table
+kable(
+  alpha_sum,
+  caption   = 'Summary of Shannon alpha diversity by Group',
+  digits    = 3,
+  col.names = c('Group', 'Samples (n)', 'Mean', 'SD')
+) %>%
+  kable_classic(full_width = FALSE, position = 'center') %>%
+  add_header_above(c('', 'Shannon diversity index' = 3))
+
+# Boxplot with Kruskal–Wallis p-value and legend
+p_alpha <- ggplot(alpha_df, aes(x = Group, y = Shannon, fill = Group)) +
+  geom_boxplot(alpha = 0.5, outlier.shape = 21,
+               position = position_dodge(width = 0.75)) +
+  scale_fill_manual(values = palette, name = "Group") +
+  stat_compare_means(
+    aes(label = paste0("Kruskal–Wallis p = ", ..p.format..)),
+    method  = "kruskal.test",
+    label.x = 1.5,
+    label.y = max(alpha_df$Shannon) * 1.05,
+    size    = 3
+  ) +
+  labs(x = "Group", y = "Shannon diversity index") +
+  theme_bw(base_size = 8) +
+  theme(
+    axis.title      = element_text(size = 10),
+    axis.text       = element_text(size = 8),
+    legend.position = "bottom",
+    legend.title    = element_text(size = 8),
+    legend.text     = element_text(size = 7)
+  )
+
+# Save
+ggsave(
+  file.path(alpha_div, 'alpha_shannon_by_group.pdf'),
+  p_alpha, width = 180, height = 120, units = 'mm', dpi = 300
+)
+ggsave(
+  file.path(alpha_div, 'alpha_shannon_by_group.png'),
+  p_alpha, width = 180, height = 120, units = 'mm', dpi = 300
+)
+
+write_xlsx(
+  alpha_df,
+  file.path(alpha_div, 'alpha_shannon_data.xlsx')
+)
+
+print(p_alpha)
+
+# Clear environment
+#rm(list = ls(all = TRUE))
+
+```
+\FloatBarrier
+The differences for alpha diversity between groups were not statistically significant (Update accordingly the analisis).
+
+# 3. Beta diversity 
+## 3.1. Clustering - Techniques for dimensionality reduction and data visualization
+### 3.1.1. PCoA (Principal Coordinate Analysis) Jaccard and Aitchison distances
+```{r beta_div_ordination, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Path
+path       <- here::here()
+beta_div <- file.path(path, "beta_div")
+dir.create(beta_div, showWarnings = FALSE, recursive = TRUE)
+Clustering <- file.path(beta_div, "Clustering")
+dir.create(Clustering, showWarnings = FALSE, recursive = TRUE)
+
+# Load phyloseq object
+ps <- readRDS(file.path(path, 'ps1.rds'))
+
+# color palette definition
+palette <- c(
+  'Group 1'     = 'steelblue',
+  'Group 2'     = 'orange'
+)
+
+# Metadata
+meta <- sample_data(ps) %>%
+  as("data.frame") %>%
+  select(-Sample_ID) %>%  
+  rownames_to_column("Sample_ID") %>%
+  mutate(Group = factor(Group, levels = names(palette)))
+
+# Build abundance df
+seq_counts <- as.data.frame(t(otu_table(ps)))
+
+```
+\FloatBarrier
+
+```{r beta_div_ordination_pcoaJac, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4, fig.cap= 'PCoA (Jaccard) by group'}
+
+# PCoA Jaccard
+jac_dmat <- vegdist(t(seq_counts), method = "jaccard")
+pcoa_res <- ape::pcoa(jac_dmat)
+jvar     <- pcoa_res$values$Relative_eig
+df_pcoa  <- data.frame(Axis.1 = pcoa_res$vectors[,1],
+                       Axis.2 = pcoa_res$vectors[,2],
+                       meta)
+
+# PCoA plot Jaccard
+p_pcoaJac <- ggplot(df_pcoa, aes(Axis.1, Axis.2, color = Group)) +
+  stat_ellipse(size = 1, level = 0.95) +
+  geom_point(size = 3) +
+  scale_color_manual(values = palette, name = "Group") +
+  coord_fixed(ratio = jvar[2]/jvar[1]) +
+  labs(title = "PCoA - Jaccard distance",
+    x     = paste0("Axis 1 (", round(jvar[1]*100,1), "%)"),
+    y     = paste0("Axis 2 (", round(jvar[2]*100,1), "%)")
+  ) +
+  theme_bw(base_size = 8) +
+  theme(legend.position = "right")
+
+p_pcoaJac
+
+# Save
+ggsave(file.path(Clustering, "pcoa_jaccard_by_group.pdf"),
+       p_pcoaJac, width = 180, height = 120, units = "mm", dpi = 300)
+
+write_xlsx(df_pcoa, file.path(Clustering, "pcoa_jaccard_scores.xlsx"))
+
+```
+
+```{r beta_div_ordination_pcoaAitch, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4, fig.cap= 'PCoA (Jaccard) by group'}
+
+# PCoA Aitchison
+
+set.seed(123) # Always run 
+
+# Build abundance df
+seq_counts <- as.data.frame(t(otu_table(ps)))
+
+# add "pseudocount"
+invisible(capture.output({
+  seq_counts_noZero <- zCompositions::cmultRepl(seq_counts)})) # method Count Zero Multiplicative-CZM
+
+# PCoA Aitchison's Euclidean
+aitch_dmat <- vegan::vegdist(t(seq_counts_noZero), method = "aitchison")
+pcoaAitch_res <- ape::pcoa(aitch_dmat)
+jvar     <- pcoaAitch_res$values$Relative_eig
+df_pcoaAitch  <- data.frame(Axis.1 = pcoaAitch_res$vectors[,1],
+                       Axis.2 = pcoaAitch_res$vectors[,2],
+                       meta)
+
+# PCoA plot Aitchison
+p_pcoa_Aitch <- ggplot(df_pcoaAitch, aes(Axis.1, Axis.2, color = Group)) +
+  stat_ellipse(size = 1, level = 0.95) +
+  geom_point(size = 3) +
+  scale_color_manual(values = palette, name = "Group") +
+  coord_fixed(ratio = jvar[2]/jvar[1]) +
+  labs(title = "PCoA - Aitchison's Euclidean distance",
+    x     = paste0("Axis 1 (", round(jvar[1]*100,1), "%)"),
+    y     = paste0("Axis 2 (", round(jvar[2]*100,1), "%)")
+  ) +
+  theme_bw(base_size = 8) +
+  theme(legend.position = "right")
+
+p_pcoa_Aitch
+
+# Save
+ggsave(file.path(Clustering, "pcoa_aitchison_by_group.pdf"),
+       p_pcoa_Aitch, width = 180, height = 120, units = "mm", dpi = 300)
+
+write_xlsx(df_pcoaAitch, file.path(Clustering, "pcoa_aitchison_scores.xlsx"))
+
+```
+\FloatBarrier
+
+### 3.1.2. NMDS (Non-Metric Multidimensional Scaling) Jaccard and Aitchison distances
+```{r beta_div_ordination_nmds, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4, fig.cap= 'NMDS - Jaccard distance'}
+
+# NMDS (Jaccard and Aitchison)
+
+set.seed(123) # Always run before NMDS
+
+# Jaccard 
+jac_nmds <- metaMDS(jac_dmat, k = 2, autotransform = FALSE, trymax = 100, trace = 0)
+ 
+df_jac_nd <- data.frame(MDS1 = jac_nmds$points[,1],
+                        MDS2 = jac_nmds$points[,2],
+                        meta)
+
+# Aitchison distances 
+euc_nmds <- metaMDS(aitch_dmat, k = 3, autotransform = FALSE, trymax = 100, trace = 0)
+df_euc_nd <- data.frame(MDS1 = euc_nmds$points[,1],
+                        MDS2 = euc_nmds$points[,2],
+                        meta)
+
+# k value
+k_value_jac <- jac_nmds$ndim 
+k_value_euc <- euc_nmds$ndim 
+
+```
+\FloatBarrier
+
+```{r beta_div_ordination_nmds_jac, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4, fig.cap= 'NMDS - Jaccard distance'}
+
+# plot NMDS Jaccard
+p_nmds_jac <- ggplot(df_jac_nd, aes(MDS1, MDS2, color = Group)) +
+  stat_ellipse(size = 1, level = 0.95) +
+  geom_point(size = 3) +
+  labs(title = paste0("NMDS - Jaccard (k = ", k_value_jac, "), Stress = ", round(jac_nmds$stress,3))) +
+  scale_color_manual(values = palette, name = "Group") +
+  theme_bw(base_size = 8) +
+  theme(legend.position = "right")
+
+p_nmds_jac
+
+# Saving NMDS_jac
+
+ggsave(file.path(Clustering, "nmds_jaccard_by_group.pdf"),
+       p_nmds_jac, width = 180, height = 120, units = "mm", dpi = 300)
+write_xlsx(df_jac_nd, file.path(Clustering, "nmds_jaccard_scores.xlsx"))
+
+```
+\FloatBarrier
+
+```{r beta_div_ordination_nmds_ait, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4, fig.cap= 'NMDS - Aitchison distance'}
+
+# Plot NMDS Aitchison's Euclidean
+p_nmds_euc <- ggplot(df_euc_nd, aes(MDS1, MDS2, color = Group)) +
+  stat_ellipse(size = 1, level = 0.95) +
+  geom_point(size = 3) +
+  labs(title = paste0("NMDS Aitchison's Euclidean (k = ", k_value_euc, "), Stress = ", round(euc_nmds$stress, 3))) +
+  scale_color_manual(values = palette, name = "Group") +
+  theme_bw(base_size = 8) +
+  theme(legend.position = "right")
+
+p_nmds_euc
+
+# Saving NMDS_Euclidean
+ggsave(file.path(Clustering, "nmds_aitchison_by_group.pdf"),
+       p_nmds_euc, width = 180, height = 120, units = "mm", dpi = 300)
+
+write_xlsx(df_euc_nd, file.path(Clustering, "nmds_aitchison_scores.xlsx"))
+
+```
+\FloatBarrier
+To corroborate the previous findings, we will perform an hierarchical clustering.
+
+### 3.1.3. Hierarchical clustering - Jaccard distance
+```{r hclust_jac, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', fig.width=6, fig.height=4, fig.cap= 'Jaccard hierarchical agglomerative clustering'}
+
+cluster_ex<-hclust(vegdist(t(seq_counts),method='jaccard'),method="complete")
+plot(cluster_ex, xlab='',sub='')
+
+# Save
+png(paste0(Clustering, "/cluster_dendrogram_jaccard.png"), width = 800, height = 600) 
+plot(cluster_ex, xlab='',sub='')
+invisible(dev.off())
+
+```
+\FloatBarrier
+
+## 3.2. Beta diversity and statistical tests
+### 3.2.1. Beta dispersion
+```{r beta_dispersion, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Path
+stats_test.dir <- file.path(beta_div, "stats_test")
+dir.create(stats_test.dir, showWarnings = FALSE, recursive = TRUE)
+
+# β-dispersion: homogeneity of group variances
+
+set.seed(123) # Always run this line before betadisper()
+
+bd_ait   <- betadisper(aitch_dmat, meta$Group)
+bd_jac   <- betadisper(jac_dmat, meta$Group)
+disp_ait <- anova(bd_ait)
+disp_jac <- anova(bd_jac)
+
+disp_table <- tibble::tibble(
+  Distance = c("Aitchison", "Jaccard"),
+  F.value  = c(disp_ait$F[1],  disp_jac$F[1]),
+  P.value  = c(disp_ait$Pr[1], disp_jac$Pr[1])
+)
+
+# Print summary
+disp_table %>%
+  knitr::kable(
+    digits  = 3,
+    caption = "Test for homogeneity of dispersion (betadisper)"
+  ) %>%
+  kableExtra::kable_styling(latex_options = c("hold_position", "scale_down"))
+
+# Save
+disp_table %>%
+  knitr::kable(
+    digits  = 3,
+    caption = "Test for homogeneity of dispersion (betadisper)",
+    format = "html"
+  ) %>%
+  kableExtra::kable_styling(full_width = FALSE) %>%
+  kableExtra::save_kable(file = file.path(stats_test.dir, "betadisper_results.html"))
+
+```
+\FloatBarrier
+
+### 3.2.2. PERMANOVA for Aitchison distance and Group variable
+```{r permanova_ait, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Output path
+stats_test.dir <- file.path(beta_div, "stats_test")
+
+# PERMANOVA 
+df <- microbiome::meta(ps)
+
+perm <- with(df, how(nperm = 999))
+perm_ait_tp <- adonis2(aitch_dmat ~ Group, data = df, permutations = perm)
+
+# Print summary
+broom::tidy(perm_ait_tp) %>%
+  knitr::kable(
+    digits  = 3,
+    caption = "PERMANOVA (Aitchison) – Group effect",
+  ) %>%
+  kableExtra::kable_styling(latex_options = c("hold_position","scale_down"))
+
+# Save
+broom::tidy(perm_ait_tp) %>%
+  knitr::kable(
+    digits  = 3,
+    caption = "PERMANOVA (Aitchison) – Group effect",
+    format = 'html'
+  ) %>%
+  kableExtra::kable_styling(full_width = FALSE) %>%
+  kableExtra::save_kable(file = file.path(stats_test.dir, "permanova_results.html"))
+
+```
+\FloatBarrier
+
+### 3.2.3. PERMANOVA for Jaccard distance and Group variable
+```{r permanova_jac, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Path
+stats_test.dir <- file.path(beta_div, "stats_test")
+
+# PERMANOVA for Jaccard distance test
+perm <- with(df, how(nperm = 999))
+perm_jac_tp <- adonis2(jac_dmat ~ Group, data = df, permutations = perm)
+
+# Print summary
+broom::tidy(perm_jac_tp) %>%
+  knitr::kable(
+    digits  = 3,
+    caption = "PERMANOVA (Jaccard) – Group effect"
+  ) %>%
+  kableExtra::kable_styling(latex_options = c("hold_position","scale_down"))
+
+# Save
+broom::tidy(perm_jac_tp) %>%
+  knitr::kable(
+    digits  = 3,
+    caption = "PERMANOVA (Jaccard) – Group effect",
+    format = "html"
+  ) %>%
+  kableExtra::kable_styling(full_width = FALSE) %>%
+  kableExtra::save_kable(file = file.path(stats_test.dir, "permanovaJaccard_results.html"))
+
+# clear environment
+#rm(list = ls(all = TRUE))
+
+```
+\FloatBarrier
+
+# 4. Session info
+```{r session_info, eval=TRUE, echo=F}
+
+sessionInfo()
+
+```
+
+
