@@ -1,0 +1,472 @@
+---
+title: 'In this field, insert the project title'
+author: 'In this field, insert the author(s) of the analysis'
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 3
+    latex_engine: xelatex
+  word_document:
+    toc: yes
+    toc_depth: 5
+  html_document:
+    df_print: paged
+    theme: cerulean
+    highlight: haddock
+    toc: yes
+    toc_depth: 3
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+    code_folding: show
+always_allow_html: yes
+header-includes:
+  - \usepackage{float}
+  - \usepackage{placeins}           # \FloatBarrier
+  - \usepackage[font=small]{caption} # Legends
+---
+================================================================================
+# Study description:
+
+~ Include here a brief description of the study ~
+
+
+================================================================================
+
+INFORMATION:
+
+The folder that stores the filtered files and those of the other analyses are automatically created in a folder called Pre-processing. Before starting the analysis, it is recommended that:
+
+RECOMMENDATION:
+
+1 - Create a folder for each project;
+2 - Make a copy of the document (.rmd file) to the new project folder you just created;
+3 - Link a new project to the created folder (upper right corner of RStudio > New project > Select the already created directory to be the project folder);
+4 - If there is more than one sequencing run: to store the .fastq files that will be submitted for analysis, create a new folder for each sequencing run (run1, run2, run3...) within the created project folder.
+
+# PREPROCESSING ION TORRENT
+
+## 1. Load libraries
+```{r libraries, eval=TRUE, echo=FALSE, warning=FALSE, include=FALSE}
+
+library(knitr)
+library(phyloseq)
+library(kableExtra)
+library(ggplot2)
+library(gridExtra)
+library(dada2)
+library(rio)
+library(writexl)
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(tibble)
+
+```
+
+## 2. Setting the paths
+```{r paths, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, include = FALSE}
+
+# Defines the paths for data and output files
+
+# Define the path for the output files
+path <- "insert/here/the/path" # Place the path to the working directory here (where you would like to create the "Preprocessing" folder)
+Preprocessing = paste(path,"/Preprocessing/",sep = "")
+dir.create(Preprocessing)
+
+# Defines the paths to the .fastq files
+pathfnFs <- "insert/here/the/path" # Here insert the path to the fastq files
+
+# The lines below will 'capture' the identification of the .fastq files. Ensure that the sample names are the same in the files and in the variable that will be linked as the sample identifier (Sample_ID) in the metadata table. Fastq files with "R1" in the name will be identified as Fwd. The "name" is what is in front of the first underscore.
+fnFs <- sort(list.files(pathfnFs, pattern="_R1.fastq", full.names = TRUE)) 
+
+save(file = 'NomeDoProjeto_1.RData', list = c('pathfnFs','path','Preprocessing','fnFs'))
+
+```
+
+## 3. Plot Quality Profile
+```{r quality_plot, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.width=16, fig.height=12}
+
+# Inspects the quality of the reads
+# It is interesting to trim some additional final nucleotides beyond those indicated by the quality plot.
+full_quality_plot <- plotQualityProfile(fnFs) # Here, adjust the range of samples that should be evaluated for quality.
+
+# saving
+FileName <- paste(Preprocessing,"/quality_plot.pdf", sep = "")
+ggsave(FileName, plot = full_quality_plot, width = 20, height = 20, units = "in", dpi = 300)
+
+```
+\FloatBarrier
+In the grayscale, a graph illustrates the frequency of each quality score at every base position. The green line represents the median quality score at each position, while the orange lines depict the quartiles of the quality score distribution. Additionally, the red line indicates the scaled proportion of reads that extend to, at least, that particular position.
+
+## 4. Filter and trim
+```{r filter_and_trim, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, include = FALSE}
+# This step performs primer removal (trimLeft), sequence truncation (truncLen), and filtering.
+
+load('NomeDoProjeto_1.RData') # Load the previously saved objects here (item 2. Setting the paths) to continue the analysis
+
+# Filter and trim
+# Define paths for the filtered files
+filt_path <- file.path(pathfnFs, "filtered") 
+filtFs <- file.path(filt_path, basename(fnFs))
+
+# Filtering - truncLen - sequence size
+out <- filterAndTrim(fnFs, filtFs, truncLen=260, trimLeft=34, maxN=0, maxEE=2, truncQ=2, rm.phix=TRUE, compress=TRUE, multithread=TRUE,)
+#head(out) # display
+
+save(file = "NomeDoProjeto_2.RData", list = c('path','Preprocessing','fnFs','out','filtFs'))
+
+rm(list = ls()) # Cleaning the environment (to proceed without cleaning the environment, comment "#" this line)
+
+```
+
+## 5. Learning errors
+```{r learn_err, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, include = FALSE}
+# This step will learn the sequencing error rates, which will be used for later sequence inference
+
+load('NomeDoProjeto_2.RData') # Load the previously saved objects here (4. Filter and trim) to continue the analysis.
+
+# File preparation (renames the files)
+sample_names <- sapply(strsplit(basename(filtFs), "_"), `[`, 1) # Assume filename = samplename_XXX.fastq.gz
+names(filtFs) <- sample_names
+
+# Learning from error rates
+errF <- learnErrors(filtFs, multithread=TRUE)
+
+save(file = "NomeDoProjeto_3.RData", list = c('path','Preprocessing','fnFs', 'out','filtFs','errF'))
+
+rm(list = ls()) # Cleaning the environment (to proceed without cleaning the environment, comment "#" this line)
+
+```
+
+## 6. Estimating error rates
+```{r plot_err_rate, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, include = FALSE}
+
+load('NomeDoProjeto_3.RData') # Load the previously saved objects here (item 5. Learning errors) to continue the analysis.
+
+# Defines the paths to the output files
+p_errors = paste(Preprocessing,"/plot_errors/",sep = "")
+dir.create(p_errors)
+
+# Visualizing error rate estimates
+plotErrors <- plotErrors(errF, nominalQ=TRUE)
+
+# saving the plots as PDF
+ggsave(plot = plotErrors, filename = file.path(p_errors, "plotErrors.pdf"), device = "pdf", width = 10, height = 8, units = "in")
+
+```
+
+## 7. Sample inference and merger of paired-end reads 
+```{r sam_inf_merg, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, include = FALSE}
+# This step runs the 'core' analysis algorithm, which infers whether the sequences are true or false and extracts the sample name from the fastq file names. The name will be everything before the first underscore in the file name and must be identical to the sample identifier used in the metadata table (sampleID). In the metadata table, we must have one identifier per sample, not per file. Additionally, it 'assembles' the sequences, joining the fwd and rev. For this, a complementarity of at least 12 databases is necessary. If a large part of the data is lost in this step, it means that the truncLen of filterandtrim (step 0.3.4) was too radical. The sum of the truncLen of the fwd and rev must be at least 480.
+
+load('NomeDoProjeto_3.RData') # Load the previously saved objects here (item 5. Learning errors) to continue the analysis.
+
+# Sample Inference
+dadaFs <- dada(filtFs, err=errF, multithread=TRUE, HOMOPOLYMER_GAP_PENALTY=-1, BAND_SIZE=32, pool=TRUE)
+
+#dadaFs[[1]] # Inspect the dada object - square brackets indicate sample or samples
+
+# converts the data (as if it were being grouped)
+mergers <- dadaFs
+
+# Inspecting the merged dataframe of the samples 
+#head(mergers[1:4]) # within the brackets - adjust the range of samples you want to inspect
+
+save(file = "NomeDoProjeto_4.RData", list = c('path','Preprocessing','fnFs','out','filtFs','errF','dadaFs','mergers'))
+
+rm(list = ls()) # Cleaning the environment (to proceed without cleaning the environment, comment "#" this line)
+
+```
+
+## 8. Construct Sequence Table, merge runs, remove chimeras and check the output 
+```{r seqtaball_remchim, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+# This chunks involves constructing the sequence table, grouping the tables from different runs, and removing chimeras
+
+load('NomeDoProjeto_4.RData') # Load the previously saved objects here (item 7. Sample inference and merger of paired-end reads) to continue the analysis.
+
+# Building the ASV table
+seqtab <- makeSequenceTable(mergers)
+#dim(seqtab) # display df size
+#table(nchar(getSequences(seqtab))) # Inspects the distribution of sequence lengths
+
+# saving ASV table
+fileName <- paste(Preprocessing,"/seqtab.csv", sep = "")
+write.csv(seqtab, file = fileName, row.names = FALSE)
+
+# Remove chimeras
+seqtab.nochim <- removeBimeraDenovo(seqtab, method="consensus", multithread=TRUE, verbose=TRUE)
+#dim(seqtab.nochim) # display df size
+
+# Checking the percentage of remaining sequences
+invisible(capture.output({
+  remain_seq <- sum(seqtab.nochim)/sum(seqtab)}))
+print(paste0(round(remain_seq, 4) * 100, '% remaining sequences.'))
+
+# saving ASV table without chimeras
+fileName <- paste(Preprocessing,"/seqtab.nochim.rds", sep = "")
+saveRDS(seqtab.nochim, fileName)
+
+save(file = "NomeDoProjeto_5.RData", list = c('path','Preprocessing','fnFs','out', 'filtFs', 'errF', 'dadaFs', 'mergers', 'seqtab', 'seqtab.nochim'))
+
+rm(list = ls()) # Cleaning the environment (to proceed without cleaning the environment, comment "#" this line)
+
+```
+
+## 9. Remove non-target-length sequences 
+```{r rem_non_targ, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, include = FALSE}
+#  Here, sequences outside the target size range are removed. The v3v4 region has a wide size distribution. Therefore, it is possible to observe different sequence sizes, in the range of ~250 to ~500. It is advantageous to remove ASVs outside this range.
+
+load('NomeDoProjeto_5.RData') # Load the previously saved objects here (item: 8. Construct Sequence Table) to continue the analysis.
+
+table(nchar(getSequences(seqtab.nochim)))
+seqtab <- seqtab.nochim[,nchar(colnames(seqtab.nochim)) %in% seq(250,500)] # If there are any remaining sequences that are significantly outside the expected range, they are possibly "noise or clutter". Adjust the sequence size range to remove them.
+table(nchar(getSequences(seqtab)))
+
+########################################################################################################################################################################################
+
+# Update proposal:
+
+# In Ion Torrent data, the size of the reads shows greater variability. Wider limits or limits based on the observed distribution were used.
+# This avoids removing real sequences and only removes extremely short or long sequences, possibly associated with noise.
+
+# # 1) Exploring sequence sizes
+#
+# tam <- nchar(getSequences(seqtab.nochim))
+#
+# summary(tam) # display
+# table(tam) # display
+# hist(tam, breaks = 50,
+#      main = "Distribution of ASV size",
+#      xlab = " (bp)")
+#
+#
+# # 2) captures the "real" sequences (above 200 bp)
+# seqtab.tmp <- seqtab.nochim[, tam >= 200]
+#
+# # 3) Check the length after the initial filter.
+# tam.tmp <- nchar(getSequences(seqtab.tmp))
+#
+# # 4) Filter based on percentages - defined based on the 1% and 99% of the observed distribution (ADJUSTABLE)
+# lim_inf <- quantile(tam.tmp, 0.01)  # 1% Em Ion Torrent: espera-se limites na faixa ~ 220–550 bp
+# lim_sup <- quantile(tam.tmp, 0.99)  # 99%
+#
+# lim_inf # display
+# lim_sup # display
+#
+# # 5) Remove extreme outliers
+# seqtab <- seqtab.tmp[, tam.tmp >= lim_inf & tam.tmp <= lim_sup]
+#
+# # 6) Check the result
+# table(nchar(getSequences(seqtab)))
+
+save(file = "NomeDoProjeto_6.RData", list = c('path','Preprocessing','fnFs','out', 'filtFs', 'errF', 'dadaFs', 'mergers', 'seqtab', 'seqtab.nochim')) 
+
+rm(list = ls()) # Cleaning the environment (to proceed without cleaning the environment, comment "#" this line)
+
+```
+
+## 10. Quality control - Tracking of reads during the pre-processing filtering 
+```{r track_reads, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+# This chunk generates the trace-ability table of the sequences throughout the process.
+
+load('NomeDoProjeto_6.RData') # Load the previously saved objects here (item: 9. Remove non-target-length sequences) to continue the analysis.
+
+# Create a read tracking table
+getN <- function(x) sum(getUniques(x))
+
+# Combine tracking tables
+track <- cbind(out, sapply(dadaFs, getN), sapply(mergers, getN), rowSums(seqtab.nochim))
+# Attention: If processing a single sample, remove the sapply calls: e.g. replace sapply(dadaFs, getN) with getN(dadaFs)
+
+# To execute the code below, the samples must be in the same order as the track.full object.
+
+# Importing manually verified and curated data in CSV format
+samdf <- read.csv('insert/here/the/path') # In this field, insert the path to the sample dataframe (samdf)
+
+#==========================================================================================================================
+
+# If you need to remove an outlier or need to remove any row from the metadata table - execute the following:
+
+# Remove specific sample by sampleID
+#track.full <- track.full[track.full$sampleID != "Sample_20", ]
+
+#==========================================================================================================================
+
+# Using the sampleID column from the samdf (metadata table) for the track.full object.
+track <- cbind(samdf$Sample_ID, track)
+
+# Renaming the columns
+colnames(track) <- c("sampleID", "input", "filtered", "denoisedF", "merged", "nonchim")
+
+head(track) #display
+
+# Exporting to an Excel file
+track_df <- as.data.frame(track)
+FileName <- paste(Preprocessing,"/Reads through the pipeline.xlsx", sep = "")
+write_xlsx(track_df, FileName) 
+
+# The script below should be tested /Thaiane
+# Adjust formatting to print 
+track_print <- track_df %>%
+  column_to_rownames("sampleID")
+
+# Printing table
+track_print %>%
+  rownames_to_column(var = "sampleID") %>%
+  kable(
+    caption = "Reads through the pipeline",
+    digits = 0,
+    booktabs = TRUE,
+    row.names = FALSE
+  ) %>%
+  kable_classic(
+    full_width = FALSE, position = "center") %>%
+  column_spec(1, bold = TRUE) %>%
+  column_spec(2:6, width = "1.5cm")
+
+```
+
+## 11. Assign taxonomy annotation
+```{r assign_taxonomy, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, include = FALSE}
+# For taxonomic annotation, you must select the desired database (usually SILVA is the most used, eHOMD for oral and respiratory) and verify that the version is the most up-to-date. Preferably use the most current version. For this, the database file must be prepared (trained) to work with dada2. These trained files are usually available on GitHub or Zenodo, and links can be found in the dada2 or Qiime2 tutorials. This trained file must be downloaded, and the 'path' to this file must be placed in the code below. The following is a link to the trained and certified database files by the creator of dada2. (https://benjjneb.github.io/dada2/training.html).
+
+# Assign taxonomy
+taxtab <- assignTaxonomy(seqtab.nochim, "insert/here/the/path", multithread = TRUE) # In this field, insert the path where the trained database is located (*/silva_nr99_v138.2_toGenus_trainset.fa.gz)
+
+save(file = "NomeDoProjeto_7.RData", list = c('path','Preprocessing','fnFs','out', 'filtFs', 'errF', 'dadaFs', 'mergers', 'seqtab', 'seqtab.nochim','taxtab')) 
+
+rm(list = ls()) # Cleaning the environment (to proceed without cleaning the environment, comment "#" this line)
+
+```
+
+## 12. Metadata engineering 
+```{r metadata_eng, eval=FALSE, echo=FALSE, message=FALSE, warning=FALSE}
+# if any data engineering is needed before assembling the phyloseq object. This example chunk was used to adjust the HCPA query and merge it with the original metadata table. Data engineering can be very laborious and case-specific. DO NOT RELY ON THE FREE VERSION OF CHATGPT OR ANY OTHER AI FOR THIS TASK (commented on 11/16/2023). If necessary, seek someone with data engineering skills
+
+# Reading the Excel file
+curated_dataset <- read_excel("caminho ou nome do arquivo/curated_dataset.xlsx")
+
+# Date/time adjustment
+curated_dataset$Extraction_date <- as.POSIXct(curated_dataset$Extraction_date, format = "%Y-%m-%dT%H:%M:%S.%OS", tz = "UTC")
+
+# Grouping the data by "BiobankID" and "Analyte", and creating a new column ranking by extraction date.
+curated_dataset <- curated_dataset %>% 
+  group_by(BiobankID, Analyte) %>% 
+  mutate(rank = dense_rank(Extraction_date))
+
+# Creates a new column of the ranked analyte.
+curated_dataset$Analyte_ranked <- paste0(curated_dataset$Analyte, " (", curated_dataset$rank, ")")
+
+# "pivot" of the data based on the ranking of the analytes and the "Result" column.
+curated_dataset_wide <- spread(curated_dataset, key = "Analyte_ranked", value = "Result")
+
+# Reading the second Excel file
+Lovison_etal_metadata <- read_excel("caminho ou nome para o arquivo_metadata.xlsx")
+
+# Converting "BiobankID" to 'double'
+Lovison_etal_metadata$BiobankID <- as.double(Lovison_etal_metadata$BiobankID)
+
+# Joining the two dataframes by "BiobankID"
+merged_data <- left_join(Lovison_etal_metadata, curated_dataset_wide, by = "BiobankID")
+
+# Removing unnecessary columns
+merged_data <- select(merged_data, -Analyte, -rank, -Extraction_date, -CollectionDate, -Exam, -HospitalLocation)
+
+# Summarize
+summarized_data <- merged_data %>%
+  group_by(sampleID) %>%
+  summarize(across(where(is.numeric), mean, na.rm = TRUE), .groups = "drop")
+
+summarized_data <- inner_join(Lovison_etal_metadata, summarized_data, by = "sampleID")
+
+# Removing samples that did not meet the quality criteria to "match" the pre-processed data
+summarized_data_filtered <- summarized_data %>%
+  filter(sampleID != "M02", sampleID != "M09", sampleID != "M49", sampleID != "M71", sampleID != "M79")
+
+# Exporting the processed data as a CSV file
+write.csv(summarized_data_filtered, file = "summarized_data_filtered.csv", sep=",", dec=".", row.names = FALSE)
+
+```
+
+## 13. Importing the completed sample dataframe 
+```{r import_samdf, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, include = FALSE}
+# The rules for creating the metadata table are given to the researchers prior to the analysis. Do not manually adjust tables, as the chances of error are enormous and, if errors occur, they become your responsibility. If the table does not conform to the guidelines, return it to the researcher and request the necessary adjustments. The metadata table is 'mandatory' for the continuation of the analysis, as it provides the variables used in subsequent analyses.
+
+load('NomeDoProjeto_7.RData') # Load the previously saved objects here (item: 11. Assign taxonomy) to continue the analysis.
+
+# Importing sample dataframe in CSV format.
+samdf <- read.csv("insert/here/the/path") # In this field, insert the path to the sample dataframe ".csv".
+
+rownames(samdf) <- samdf$Sample_ID # Here, the sample dataframe identifier (sampleID) is linked to the rownames, which is the sample name extracted from the file names in the previous steps. It is crucial that the names are the same, otherwise an error will occur. SampleID is the name of the column (header) that contains the sample identifier. This step is important because several functions use rownames internally in their execution.
+
+save(file = "NomeDoProjeto_8.RData", list = c('path','Preprocessing','fnFs','out', 'filtFs', 'errF', 'dadaFs', 'mergers', 'seqtab', 'seqtab.nochim','taxtab','samdf')) 
+
+rm(list = ls()) # Cleaning the environment (to proceed without cleaning the environment, comment "#" this line)
+
+```
+
+## 14. Construct the phyloseq object
+```{r phyloseq_object, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, include = FALSE}
+
+load('NomeDoProjeto_8.RData') # Load the previously saved objects here (item: 12. Importing the ready-made metadata table) to continue the analysis.
+
+# Producing the phyloseq object
+ps <- phyloseq(otu_table(seqtab.nochim, taxa_are_rows=FALSE), 
+               sample_data(samdf), 
+               tax_table(taxtab))
+
+saveRDS(ps, file = "ps.rds") # Saving the raw ps object. In this object, the sequence name will be the sequence itself.
+
+# Renaming the sequences for better handling
+dna <- Biostrings::DNAStringSet(taxa_names(ps))
+names(dna) <- taxa_names(ps)
+ps.dna <- merge_phyloseq(ps, dna)
+taxa_names(ps.dna) <- paste0("ASV", seq(ntaxa(ps.dna)))
+ps.dna
+
+saveRDS(ps.dna, file = "ps.dna.rds") # In this object, the sequence name will be ASV and a corresponding number. This object will be the usual one for the analysis. Throughout the analysis, for figures where it is necessary to format the names with the taxonomy, the 'format_to_best_hit' function should be used, which will possibly already be set in the chunk. This formatting cannot be done beforehand because some analysis functions do not tolerate this formatting. 
+
+# Saving only the phyloseq objects
+save(file = "NomeDoProjeto_9.RData", list = c('ps', 'ps.dna'))
+
+###############################################################################################################################################################################################
+# previous code (Otavio) with unknown phyloseq_to_df function
+
+# ## Convertendo o objeto PS em dataframe
+# ASV_Table <- phyloseq_to_df(ps, addtax = T, addtot = T, addmaxrank = F, sorting = "abundance")
+# 
+# ##Gerando legenda de sequencias
+# Legendadesequencias <- refseq(ps)
+# write.table(Legendadesequencias, file = "diretorio/Legendadesequencias.csv")
+
+###############################################################################################################################################################################################
+
+# Generating abundance table + taxonomy in CSV file
+
+# Extracting abundance table
+otu <- as.data.frame(otu_table(ps))
+# Ensuring that ASVs are on the lines
+if (!taxa_are_rows(ps)) {
+  otu <- t(otu)
+}
+# Extract taxonomic table
+tax <- as.data.frame(tax_table(ps))
+# Combine abundance and taxonomy data
+ASV_Table <- cbind(tax, otu)
+# Rename the ASV column (Transform row names (ASV) into a column)
+ASV_Table <- cbind(ASV = rownames(ASV_Table), ASV_Table)
+rownames(ASV_Table) <- NULL
+# Generates the CSV file
+write.csv(ASV_Table, file = file.path(Preprocessing,"ASV_Table.csv"), row.names = FALSE, quote = FALSE)
+
+```
+
+## 15. Session info
+```{r session_info, eval=TRUE, echo=FALSE}
+
+sessionInfo()
+
+```
+**"nomedoprojeto_9.RData"** Record: this object contains the output of phyloseq for further analysis.
